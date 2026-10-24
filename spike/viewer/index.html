@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splat viewer</title>
+<style>
+  :root { color-scheme: light dark; --bg: #1b1d22; --fg: #e9eaee; --panel: rgba(0,0,0,.45); }
+  @media (prefers-color-scheme: light) { :root { --bg: #d9dce2; --fg: #15171c; --panel: rgba(255,255,255,.7); } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; overflow: hidden; }
+  #bar { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 10px; background: var(--panel); border-radius: 8px; z-index: 2; }
+  #status { margin-left: auto; opacity: .8; }
+  button, label.file { padding: 6px 10px; border-radius: 6px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; }
+  input[type=file] { display: none; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../vendor/node_modules/three/build/three.module.js",
+    "three/addons/": "../vendor/node_modules/three/examples/jsm/",
+    "@sparkjsdev/spark": "../vendor/node_modules/@sparkjsdev/spark/dist/spark.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="bar">
+  <button id="reset" type="button">Reset view</button>
+  <label class="file">Open PLY/SOG<input id="file" type="file" accept=".ply,.sog,.splat,.spz"></label>
+  <span id="status">loading…</span>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
+
+const status = document.getElementById('status');
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+// Spark draws and sorts all SplatMesh objects through this renderer; it must be in the scene.
+scene.add(new SparkRenderer({ renderer }));
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 1000);
+const defaultView = { pos: [6, 2.5, 6], target: [0, 0.6, 0] };
+camera.position.set(...defaultView.pos);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(...defaultView.target);
+controls.enableDamping = true;
+controls.update();
+
+let splat = null;
+
+async function load(url, label) {
+  status.textContent = `loading ${label}…`;
+  if (splat) {
+    scene.remove(splat);
+    splat.dispose?.();
+  }
+  const t0 = performance.now();
+  splat = new SplatMesh({ url });
+  scene.add(splat);
+  try {
+    await splat.initialized;
+  } catch (err) {
+    status.textContent = `failed: ${err.message ?? err}`;
+    throw err;
+  }
+  // Scans from COLMAP-style pipelines often arrive Y-down; flip upright. Adjust if a source differs.
+  splat.rotation.x = Math.PI;
+  frameSplat(splat);
+  const n = splat.numSplats ?? '?';
+  status.textContent = `${label} · ${n} splats · ${Math.round(performance.now() - t0)} ms`;
+}
+
+// Frame the loaded splat: look at its bounds centre from a distance that fits the largest extent.
+let framed = null;
+function frameSplat(mesh) {
+  const box = mesh.getBoundingBox();
+  const centre = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3()).length();
+  framed = {
+    target: centre,
+    pos: centre.clone().add(new THREE.Vector3(1, 0.35, 1).normalize().multiplyScalar(size * 1.8)),
+  };
+  resetView();
+}
+
+function resetView() {
+  const v = framed ?? defaultView;
+  camera.position.copy(framed ? framed.pos : new THREE.Vector3(...defaultView.pos));
+  controls.target.copy(framed ? framed.target : new THREE.Vector3(...defaultView.target));
+  controls.update();
+}
+
+document.getElementById('reset').addEventListener('click', resetView);
+
+document.getElementById('file').addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  if (f) load(URL.createObjectURL(f), f.name).catch(() => {});
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+// Debug handle for the spike; remove once the viewer is trusted.
+window.splatViewer = { scene, camera, controls, renderer, get splat() { return splat; } };
+
+const params = new URLSearchParams(location.search);
+const src = params.get('src') || '../data/test_car.ply';
+load(src, src.split('/').pop()).catch(() => {});
+</script>
+</body>
+</html>

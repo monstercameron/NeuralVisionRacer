@@ -1,0 +1,817 @@
+{
+  "checked_on": "2026-10-24",
+  "purpose": "Pinned reference source subsets for a Rust port; not standalone libraries.",
+  "sources": [
+    {
+      "name": "playcanvas-engine",
+      "repository": "playcanvas/engine",
+      "branch": "main",
+      "commit": "209ce5752527ab5050ec9632ca6dc1272542b70d",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "LICENSE",
+          "git_blob_sha": "7f478db6d47a259cd70f74b1e69d8ce407fd0912"
+        },
+        {
+          "path": "README.md",
+          "git_blob_sha": "0f27cba3f65d3fc669b4c7bf2dda680e5fd47591"
+        },
+        {
+          "path": "package.json",
+          "git_blob_sha": "3f0a6fdd777c232937162203bc63238a721a6900"
+        },
+        {
+          "path": "src/framework/parsers/ply.js",
+          "git_blob_sha": "e681fb23cf43d3fc447b2492752c550ed14d1b36"
+        },
+        {
+          "path": "src/framework/parsers/sog-bundle.js",
+          "git_blob_sha": "bc4620bc3eaf40fea3dc305f735156e19b3b68a8"
+        },
+        {
+          "path": "src/framework/parsers/sog.js",
+          "git_blob_sha": "5a4bfbe0331c904ce8f769f2ab03fea5a5aa0752"
+        },
+        {
+          "path": "src/scene/gsplat-unified/constants.js",
+          "git_blob_sha": "528aa9a9b6038fd4d5529fd457ae41e98c060a25"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-alloc-id.js",
+          "git_blob_sha": "7f1d08c4dc50acab6628646e54a7dc900e0ecf0e"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-asset-loader-base.js",
+          "git_blob_sha": "831c3abc569943093e18343abb68d26944473295"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-budget-balancer.js",
+          "git_blob_sha": "02fe578e8ff6ade93e14d2fd810d1de8ac379e03"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-director.js",
+          "git_blob_sha": "a0271b58120acf7c3e5377155a26d8d493b9c145"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-frustum-culler.js",
+          "git_blob_sha": "25d6b021c79ebb376e73a50e1c3a063da0da5b79"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-hybrid-renderer-scratch.js",
+          "git_blob_sha": "f1c93db98e438e455c35e1b7a4c3edaf8f23fe97"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-hybrid-renderer.js",
+          "git_blob_sha": "874d755b690148bf8f01144ed36c1d63b552f574"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-info.js",
+          "git_blob_sha": "65904b202022348b46ec5e5ac77264f180500786"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-interval-compaction.js",
+          "git_blob_sha": "19c5b1c08ab1d829fa02ca99514a6bd022886a56"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-interval-data.js",
+          "git_blob_sha": "47b470429ea30579d69910787baacc92b6cddc9b"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-lod-colors.js",
+          "git_blob_sha": "d965311c357b3c65bbe8bc9053456ab19cf841ef"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-lod-table.js",
+          "git_blob_sha": "be9b75aefdb45083e229c80fa4dbfd05fbc8da84"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-manager.js",
+          "git_blob_sha": "02b67daef95ef6891ecc3e5cef077d742ebb2b72"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-octree-instance.js",
+          "git_blob_sha": "3032c5ae626d8be2354fe30a00b1f6458bd605d6"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-octree-node.js",
+          "git_blob_sha": "28f3ae8f1b5a3e8009e36b432dc6190fbf4c7a9c"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-octree.js",
+          "git_blob_sha": "8f1965c367bc5ab61cfc3715961db88231dbcf83"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-octree.resource.js",
+          "git_blob_sha": "382ac5b549b48a8a3c513d3358afd1ae745159b6"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-params.js",
+          "git_blob_sha": "3ff305be69dac3520ccb6a3a1d8544ec7fa78f9d"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-placement-state-tracker.js",
+          "git_blob_sha": "d16b43616dca5526d1356c01966a627390222c0b"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-placement.js",
+          "git_blob_sha": "ee0c43e53f95ec36d2a8a1041b80f3abf200e432"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-projector-constants.js",
+          "git_blob_sha": "45b3f4aa79409eb12f1fb5ea753e1852186c2c3d"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-projector.js",
+          "git_blob_sha": "571b774db30856671f6b9496eb854cd3c63d9efd"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-quad-renderer.js",
+          "git_blob_sha": "51cdc98914569d57457516f6418df57893ef571a"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-renderer.js",
+          "git_blob_sha": "051dd8e20098431eb335794478757d9ae05f2957"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-shadow-renderer.js",
+          "git_blob_sha": "965ff8184bc82299efd379f9fcc2803e4bf760cc"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-sort-bin-weights.js",
+          "git_blob_sha": "d98f61159b20d484ee571e5a7c230ee4d1c37ea6"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-unified-sort-worker.js",
+          "git_blob_sha": "cb721c056be10fbfdc5969f2f0993dc4ec5cc677"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-unified-sorter.js",
+          "git_blob_sha": "041c8b1b6b6052b5d51bc188bf91b33834b4cd98"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-varyings.js",
+          "git_blob_sha": "b5806fa9fcf751f5094abd2731e47f90423d2c05"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-work-buffer-render-pass.js",
+          "git_blob_sha": "c27ae25c3084e243b173b8e16913dee546005f85"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-work-buffer.js",
+          "git_blob_sha": "9d0437ce01d03ddee6b273da6c9e6a7b87ceca3e"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-world-state.js",
+          "git_blob_sha": "b53f716451133e09148f641f581715ddee01a1fe"
+        },
+        {
+          "path": "src/scene/gsplat-unified/gsplat-world.js",
+          "git_blob_sha": "aefa5173ff8b29fd8d2474ff1026db5968a4c012"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-compressed-data.js",
+          "git_blob_sha": "e1160aea918bd5ccbf0052e5a92b3d0a4ad198a5"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-compressed-resource.js",
+          "git_blob_sha": "8c5f222bebae61b5a48894fc2cf3dc1b480bac8d"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-container.js",
+          "git_blob_sha": "9066717794109b1081e6b461c6a6c0cff7ba8110"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-data.js",
+          "git_blob_sha": "cdf6743aae39b52bac179990d1c5a3532324963b"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-format.js",
+          "git_blob_sha": "face9b7237d6d895de9e41c7a674ed0e423c8216"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-instance.js",
+          "git_blob_sha": "e221a65f5d2172cbc1d99f7dfc6078fc02595a26"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-resource-base.js",
+          "git_blob_sha": "0f917395e88596215db000da455cef35daf9d838"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-resource-cleanup.js",
+          "git_blob_sha": "addc5dffbffb41047f64561f8223139ea271edc2"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-resource.js",
+          "git_blob_sha": "f28f0edc4d3c187fec33739f21bbfe78eb63e0b8"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-sog-data.js",
+          "git_blob_sha": "389403a83a24e82e08bedf6417d4ba45f746b512"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-sog-resource.js",
+          "git_blob_sha": "a2b509a7cd7a641418596b110856caa079d234f2"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-sort-worker.js",
+          "git_blob_sha": "fba92c9ebc513dba80d61eeed4f47af291adebb4"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-sorter.js",
+          "git_blob_sha": "30ded3fa7a5895785d10c69aab207ab13fbdc1bd"
+        },
+        {
+          "path": "src/scene/gsplat/gsplat-streams.js",
+          "git_blob_sha": "ac33c0a0f73a7bef610a77783713c6b42f04a0ba"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/formats/containerCompactWrite.js",
+          "git_blob_sha": "a400ca7ba675cef33189b0db538e01a5e3cace1f"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/formats/containerPackedWrite.js",
+          "git_blob_sha": "bd943bc36f9242f595199a2394d664942cd702ac"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/gsplat.js",
+          "git_blob_sha": "15a57b8edfecd2fde9e5479a842b9c9048c16983"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/gsplatCopyToWorkbuffer.js",
+          "git_blob_sha": "732b8822370c86334b0a181c1f5e3f77ce7587ac"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/gsplatModify.js",
+          "git_blob_sha": "947ff98583476fde44f0948ef783cc82a65630fb"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/gsplatPacking.js",
+          "git_blob_sha": "664b47366d88a46ff49bab48f6004bee5667af28"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/gsplatProcess.js",
+          "git_blob_sha": "17d65314462c441ea81d4266a08c57bb5d81b6d6"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/gsplatSogCenters.js",
+          "git_blob_sha": "3569874820c3f5df151a8b60459e84e2ec01463d"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/frag/gsplatWorkBufferGeometry.js",
+          "git_blob_sha": "d56401cae3dda22c35ade8f338e193a9a7415101"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/varyings/gsplatVaryingDeclPS.js",
+          "git_blob_sha": "5396e1abad712b63002650a0c8af92b9b4e0473d"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/varyings/gsplatVaryingDeclVS.js",
+          "git_blob_sha": "8b762c3134235412a0bb9ea52383c978c231ac87"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/compressed.js",
+          "git_blob_sha": "c4bc04befb22879b78c4813579ef5d798a21d23a"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/compressedSH.js",
+          "git_blob_sha": "edc71fb37e62e05ebe007babc925dc83f62bf713"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/containerCompactRead.js",
+          "git_blob_sha": "080180fa4f34ffcc4ff6dbef281691338e312a45"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/containerDecl.js",
+          "git_blob_sha": "be109d8ec1767d237f4176917dd435a47fd5fe44"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/containerFloatRead.js",
+          "git_blob_sha": "a50470cbe96c03895616c5e24f7d04d3cb104593"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/containerPackedRead.js",
+          "git_blob_sha": "53ddb8f3ba5f6511979de6ddf0067718cf274822"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/containerRead.js",
+          "git_blob_sha": "50531c14ed95367145e284cd7bba81f57d6eaea9"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/containerSimpleRead.js",
+          "git_blob_sha": "1d6a37a4de39f84fc162e7ce485efb646d75473e"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/sog.js",
+          "git_blob_sha": "4966a42db057d4a0893da3206d548eb0b2ecf0e7"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/sogSH.js",
+          "git_blob_sha": "e70d61ae8d5314fd6b34b9ade7bb258eb36d11cd"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/uncompressed.js",
+          "git_blob_sha": "18f18b43aab0484f5857253edb0fc4e1cd27fa76"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/formats/uncompressedSH.js",
+          "git_blob_sha": "7cb27d10904c8b811939e7641a14468424f85fed"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplat.js",
+          "git_blob_sha": "543306ac4b71ef0874b4d49f6a9000c1d2dad1c9"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatCenter.js",
+          "git_blob_sha": "99437629f1af24cf407651d87e1be73bccfa8fbb"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatCommon.js",
+          "git_blob_sha": "180b109f7144bf50655b4a0ebc0aa61967fcc319"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatCopyInstancedQuad.js",
+          "git_blob_sha": "218263e3e51c5b2d19007127c71ee936c4468038"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatCorner.js",
+          "git_blob_sha": "15cff84f89f2fe4280d67000e413ed10d4e86e29"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatEvalSH.js",
+          "git_blob_sha": "9460fa4840ba7693e2ff5d8d09c3ee86a2f7c397"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatFormat.js",
+          "git_blob_sha": "8bb3f2fd4f7f484b17908c0efc0e89d892ec9425"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatHelpers.js",
+          "git_blob_sha": "9ce0fb3bd09311daefcf6b9ac4c3f4f0b714ee91"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatModify.js",
+          "git_blob_sha": "65402fd4e1bb022254cb8c371ffd00b3b08eaaf5"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatOutput.js",
+          "git_blob_sha": "c589d28c587ff9eb2afd37b21cb6369f775c844b"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatQuatToMat3.js",
+          "git_blob_sha": "0716564ac0536a36697f00cf096120aee83a69c9"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatSource.js",
+          "git_blob_sha": "d83d3704ef18bd8dcb653c1b0256ad79b08c93a5"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatSplat.js",
+          "git_blob_sha": "786151c6e5c4413eef69ba13101e5058528e2536"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatStreamDecl.js",
+          "git_blob_sha": "b5a7501433d04e6178924b5e87f90e657ee9f816"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatStreamOutput.js",
+          "git_blob_sha": "9680c97475e8921bb4b721dbdb3b90214213a77f"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/chunks/gsplat/vert/gsplatStructs.js",
+          "git_blob_sha": "5fa345a4e3c89f57c08e4e965cdbdd21ad454f40"
+        },
+        {
+          "path": "src/scene/shader-lib/glsl/collections/gsplat-chunks-glsl.js",
+          "git_blob_sha": "e4135ceba423fe66a349538b58fbcc9f0923ec4b"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-common.js",
+          "git_blob_sha": "04407ed4c8bdaf8e3586ae67e60dcb7ce1ceed1a"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-interval-cull.js",
+          "git_blob_sha": "5fbb42d5e9a8354f57ecb96f867aad40dac6f240"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-interval-scatter.js",
+          "git_blob_sha": "73b76fe1ade96d332705bee3315da49dca71a35e"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-project-common.js",
+          "git_blob_sha": "f636f4f2330dca3cd86e82d2c85ba4398b9db99d"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-projector-write-indirect-args.js",
+          "git_blob_sha": "6391d6b2c08308c9d100edde806e2268ddb03421"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-projector.js",
+          "git_blob_sha": "0ae921c17db3c3650af7bf0d56f7d3106d89a02a"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-shadow-cull.js",
+          "git_blob_sha": "0368cd8c22a3fc9fe8dbf81f8fbf324ed6b207e9"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-shadow-indirect-args.js",
+          "git_blob_sha": "92c641c513ea1df08f08781e54ba7f6e7bdb3d02"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/compute-gsplat-write-indirect-args.js",
+          "git_blob_sha": "039aa9d925ebf112ef37b9b0e7e74f1af518f0c8"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/formats/containerCompactWrite.js",
+          "git_blob_sha": "65eedf1d425cfdcd2c8d46c9eb42840fd0fdde03"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/formats/containerPackedWrite.js",
+          "git_blob_sha": "966a1e7da29b994c8f5c44106081459cb732d0fd"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/gsplat.js",
+          "git_blob_sha": "4c2c00d637f1fce9b2a1e8bccac3510a121b53d3"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/gsplatCopyToWorkbuffer.js",
+          "git_blob_sha": "592df7e3c253b1a2c348672447833ba4624d7d5b"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/gsplatModify.js",
+          "git_blob_sha": "cf889060aff3fcd57d45f626692f80a844520fdb"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/gsplatPacking.js",
+          "git_blob_sha": "976ff6e8304ca28defd0a01de85d857c04efad9e"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/gsplatProcess.js",
+          "git_blob_sha": "7c7b5d8afc9e18e33fbad48354187c4c8349640f"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/gsplatSogCenters.js",
+          "git_blob_sha": "a99c7ef0812db5ce5d61e1fb29127bc30db0de3f"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/frag/gsplatWorkBufferGeometry.js",
+          "git_blob_sha": "801cfa37e5c0101c6a4171a18a1791d441b7c59e"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/varyings/gsplatVaryingCacheReadVS.js",
+          "git_blob_sha": "e1e7404395a11a05141fcb1624a76d9695d1eda8"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/varyings/gsplatVaryingCacheWriteCS.js",
+          "git_blob_sha": "e9abbb2187c3aa31dc885856b682a46ee5601c09"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/varyings/gsplatVaryingDeclCS.js",
+          "git_blob_sha": "fae7e3a64e46052d60e8e53d359ba48f2b8ac883"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/varyings/gsplatVaryingDeclPS.js",
+          "git_blob_sha": "2e2933e88f9499b5c2aee471d998814bc4a80007"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/varyings/gsplatVaryingDeclVS.js",
+          "git_blob_sha": "c130b02c46187c0df4e563a7ff623d75e0da757b"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/varyings/gsplatVaryingFlushVS.js",
+          "git_blob_sha": "beb917ff8accddfc8d8bf66540fae331462fccbc"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/compressed.js",
+          "git_blob_sha": "5c2337b22c850c792d365754d06378bc9d129027"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/compressedSH.js",
+          "git_blob_sha": "792d46044629e44ff33c83e274d9ad9810e22612"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/containerCompactRead.js",
+          "git_blob_sha": "aa6545500f1194df7417fbf8524ad0235dc66290"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/containerDecl.js",
+          "git_blob_sha": "fe1ff51fbccd73c8b43faf798bcd386fd9343000"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/containerFloatRead.js",
+          "git_blob_sha": "84459efdc2c2c9f6788fac3f53866cd74efaa60d"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/containerPackedRead.js",
+          "git_blob_sha": "696c8f41a8f8ce7ff4c9586cac0d5678aa111011"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/containerRead.js",
+          "git_blob_sha": "14ee2fbd94b651cb34f252fd2ac47c522ae4c795"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/containerSimpleRead.js",
+          "git_blob_sha": "5c51ff7dc2088ea4ba4278fedb32a3f99071dc9d"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/sog.js",
+          "git_blob_sha": "8ebba296f7a1f237ce7c62b82964fad5d36865ee"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/sogSH.js",
+          "git_blob_sha": "b1a4e2627018cdb5a94e0ac60679b6c9b3c3b14c"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/uncompressed.js",
+          "git_blob_sha": "8e95443a4c11668b3fbe05b25cea75bf34a6f5f1"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/formats/uncompressedSH.js",
+          "git_blob_sha": "b7178be13f960de8ce3a46e0e88b3c05a396fc2d"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplat.js",
+          "git_blob_sha": "69d184788d5b2e13ea44cea45fdb6b2c5b8e7320"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatCenter.js",
+          "git_blob_sha": "2b1e606220b0890548809c74ab73155922bb1bbf"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatCommon.js",
+          "git_blob_sha": "48b86bc92b64924f63fe0c76cacd628699dff67a"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatComputeSplat.js",
+          "git_blob_sha": "847d58577e7897b04feb2cac897e46a03ebc9718"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatComputeStreamDecl.js",
+          "git_blob_sha": "b6f774cc00981107a5e56b56e96014fddef37454"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatCopyInstancedQuad.js",
+          "git_blob_sha": "d1d7726dffc234375d06fe8011664e8b005ba89a"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatCorner.js",
+          "git_blob_sha": "385c3506e899b4c6cb9401170c48a5d3ac709097"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatEvalSH.js",
+          "git_blob_sha": "34e8f9258f71582e012837f26e4b2c57fbf03f31"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatFormat.js",
+          "git_blob_sha": "316dc34fd1e9b35c18780b776c74eabcbefee5ed"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatHelpers.js",
+          "git_blob_sha": "1fb4e3bf3066374231bf7f09d473810c3ff605bc"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatHybrid.js",
+          "git_blob_sha": "9018b9465048cc1b74509845f048cbbc073a2211"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatModify.js",
+          "git_blob_sha": "f93bbf769ec9218a95360b9930f39c275d565995"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatOutput.js",
+          "git_blob_sha": "03e233b91b9bd411bed6d65a5f90f20116788aa4"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatQuatToMat3.js",
+          "git_blob_sha": "91cccc12dbbac23beb0bdbc26e4ebcf24858035d"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatSource.js",
+          "git_blob_sha": "367169bbb5a5b67fa9e15e730474944e97a8a140"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatSplat.js",
+          "git_blob_sha": "32822ebef55f8f066a1188c6cf8627832118ce5f"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatStreamDecl.js",
+          "git_blob_sha": "a38de2fef40800318183dc9bac2639192acce613"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatStreamOutput.js",
+          "git_blob_sha": "0bd7e8556f4f6bae6ce5708654d945cea225de84"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/gsplat/vert/gsplatStructs.js",
+          "git_blob_sha": "61a0c13854b7f13f092d81b450b72609276a8d76"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/radix-sort/compute-prefix-sum.js",
+          "git_blob_sha": "9bed32ea38257d0010fb2d18583ae176b648f867"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/radix-sort/compute-radix-sort-4bit.js",
+          "git_blob_sha": "63241afbc8464e678607701fd075aa970b643086"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/radix-sort/compute-radix-sort-reorder.js",
+          "git_blob_sha": "69d862189d45989bfcbac5a6c63f03dfedf11cef"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/radix-sort/onesweep-binning.js",
+          "git_blob_sha": "cb4bfb50b4111c09b304785c3790b0fd2815587c"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/radix-sort/onesweep-global-hist.js",
+          "git_blob_sha": "e40b7cc5ddbe3e4c1bbe1813a3a237cac413b7d1"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/chunks/radix-sort/onesweep-scan.js",
+          "git_blob_sha": "5ba81caa0d48345c06b23f4096738be767b7e2e0"
+        },
+        {
+          "path": "src/scene/shader-lib/wgsl/collections/gsplat-chunks-wgsl.js",
+          "git_blob_sha": "2105e4be8a2eec82a5dd1aa68bcc2651281ff64e"
+        }
+      ]
+    },
+    {
+      "name": "splat-transform",
+      "repository": "playcanvas/splat-transform",
+      "branch": "main",
+      "commit": "4f90012be983078010d631fa0572baa99d5c1965",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "LICENSE",
+          "git_blob_sha": "7f478db6d47a259cd70f74b1e69d8ce407fd0912"
+        },
+        {
+          "path": "README.md",
+          "git_blob_sha": "14f1cb78013b3591ea8a8dcb187fdb1b9f3b7230"
+        },
+        {
+          "path": "package.json",
+          "git_blob_sha": "648adea5b9d0ffdd1e10bb190f8e88de7849eb6c"
+        },
+        {
+          "path": "src/lib/gpu/gpu-voxelization.ts",
+          "git_blob_sha": "a1f2415793f39251edc341a0a8d9b480bca7773f"
+        },
+        {
+          "path": "src/lib/mesh/coplanar-merge.ts",
+          "git_blob_sha": "f30123f3cc7dab32fb74ee5df310fd38279d69d7"
+        },
+        {
+          "path": "src/lib/mesh/index.ts",
+          "git_blob_sha": "06c45a2e84f7880c367d1aae92dbcfa43ff80b30"
+        },
+        {
+          "path": "src/lib/mesh/marching-cubes.ts",
+          "git_blob_sha": "1fb5c2cd032f284bcb0d2943241f212bd276f2a8"
+        },
+        {
+          "path": "src/lib/mesh/voxel-faces.ts",
+          "git_blob_sha": "19861ac70edaef81114e3058e1a2a937698fd561"
+        },
+        {
+          "path": "src/lib/readers/read-sog-v1.ts",
+          "git_blob_sha": "74fbc046da926f7940fe25842170a47ac805f204"
+        },
+        {
+          "path": "src/lib/readers/read-sog.ts",
+          "git_blob_sha": "7c598e97e3f08b071406dcda8a08b9ccbc9f5712"
+        },
+        {
+          "path": "src/lib/voxel/block-cleanup.ts",
+          "git_blob_sha": "4eb86afe6bf96d345ff8075663c71013b9431272"
+        },
+        {
+          "path": "src/lib/voxel/block-index-map.ts",
+          "git_blob_sha": "029cd34ff90df482ac4c511ef01ebb059eb17873"
+        },
+        {
+          "path": "src/lib/voxel/block-mask-buffer.ts",
+          "git_blob_sha": "e71c1c4808f5fe7b239e795e3dc758935657fdc9"
+        },
+        {
+          "path": "src/lib/voxel/block-mask-map.ts",
+          "git_blob_sha": "ec307a3b1e0dd7392a850e5d1ec57caad2b47252"
+        },
+        {
+          "path": "src/lib/voxel/carve.ts",
+          "git_blob_sha": "1e45cca06ead4d7a6d1b9828d34c5c9e1f983d72"
+        },
+        {
+          "path": "src/lib/voxel/dilation.ts",
+          "git_blob_sha": "1f41cb27fcd5ae7efe77e8bdffe424044ef3ef84"
+        },
+        {
+          "path": "src/lib/voxel/fill-exterior.ts",
+          "git_blob_sha": "04a441f526520aed8b3693149a28695c9514239e"
+        },
+        {
+          "path": "src/lib/voxel/fill-floor.ts",
+          "git_blob_sha": "43e4e914b534b4e115ab277b731339e911d13ee0"
+        },
+        {
+          "path": "src/lib/voxel/filter-cluster.ts",
+          "git_blob_sha": "a0d627d4a6e775504be434d32b8bae0848087e84"
+        },
+        {
+          "path": "src/lib/voxel/filter-floaters.ts",
+          "git_blob_sha": "8cc0a3bdb56593c18c3c80d416498ecbdeb4a29d"
+        },
+        {
+          "path": "src/lib/voxel/filter-pipeline.ts",
+          "git_blob_sha": "d37ff282551c657c94ff5aab34616f2df9500022"
+        },
+        {
+          "path": "src/lib/voxel/flood-fill.ts",
+          "git_blob_sha": "bbdc93d55c1aae7d178b20353cad35214cb729ed"
+        },
+        {
+          "path": "src/lib/voxel/grid-ops.ts",
+          "git_blob_sha": "1a764b2c6490456abd70a858b96a2209974f2ef9"
+        },
+        {
+          "path": "src/lib/voxel/index.ts",
+          "git_blob_sha": "866db43f8fef14def49310c42efd196b86799819"
+        },
+        {
+          "path": "src/lib/voxel/morton.ts",
+          "git_blob_sha": "aa3c2ff82302b442bb9849987e69bf2d499905c6"
+        },
+        {
+          "path": "src/lib/voxel/sort-key-mask.ts",
+          "git_blob_sha": "ecdc6ce88464a05b1b15c72399be8c21d7ca0e02"
+        },
+        {
+          "path": "src/lib/voxel/sparse-voxel-grid.ts",
+          "git_blob_sha": "eeb43332ccfe3fd961c3e1ad96209c4805c80226"
+        },
+        {
+          "path": "src/lib/voxel/voxel-query.ts",
+          "git_blob_sha": "a5b2e738bf5d6d11fbe44d693924484fe466292e"
+        },
+        {
+          "path": "src/lib/voxel/voxelize.ts",
+          "git_blob_sha": "8fbc4730ccf53a23d41b53bbe8c3174fa390bce6"
+        },
+        {
+          "path": "src/lib/writers/collision-glb.ts",
+          "git_blob_sha": "36d4e6b0ce60ca3be6bde8da281868712e0fa985"
+        },
+        {
+          "path": "src/lib/writers/write-sog.ts",
+          "git_blob_sha": "3346113e38271b75ab34e39642c7902ca1d5e710"
+        },
+        {
+          "path": "src/lib/writers/write-voxel.ts",
+          "git_blob_sha": "b80da50ebb5391999f952b51589105e289e12a78"
+        }
+      ]
+    },
+    {
+      "name": "supersplat-viewer",
+      "repository": "playcanvas/supersplat-viewer",
+      "branch": "main",
+      "commit": "06d1c880edc4756a0ccf0a9f03f90fd1182ef178",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "LICENSE",
+          "git_blob_sha": "a034c81d27315ccdb767eae329b870ad03b6835b"
+        },
+        {
+          "path": "README.md",
+          "git_blob_sha": "1f74e79d0022cab7de0505c92c391d07afbd3249"
+        },
+        {
+          "path": "package.json",
+          "git_blob_sha": "619ecd6b4d4f817bdcf20c733dfe1808a1f06061"
+        },
+        {
+          "path": "src/collision/collision.ts",
+          "git_blob_sha": "be8d7873ff7673634513e657f65b39176a47dcf1"
+        },
+        {
+          "path": "src/collision/find-spawn.ts",
+          "git_blob_sha": "aa7d2e8ef7b45b7991afd5bc7503d091679b3f4c"
+        },
+        {
+          "path": "src/collision/index.ts",
+          "git_blob_sha": "1f6e1aba0f6e12bcd395668b35238789a1604d33"
+        },
+        {
+          "path": "src/collision/mesh-collision.ts",
+          "git_blob_sha": "055b1cd5c1e9d813eea6fcd41ddff51a71dc6ecf"
+        },
+        {
+          "path": "src/collision/voxel-collision.ts",
+          "git_blob_sha": "3e6f0f6f6d6d276f9262d74ad4ff7492347bfa1a"
+        }
+      ]
+    }
+  ]
+}

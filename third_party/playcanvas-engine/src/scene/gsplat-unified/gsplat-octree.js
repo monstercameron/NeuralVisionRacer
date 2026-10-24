@@ -1,0 +1,784 @@
+import { GSplatOctreeNode } from './gsplat-octree-node.js';
+import { GSplatLodTable } from './gsplat-lod-table.js';
+import { path } from '../../core/path.js';
+import { Debug } from '../../core/debug.js';
+import { Tracing } from '../../core/tracing.js';
+import { TRACEID_OCTREE_RESOURCES } from '../../core/constants.js';
+// Temporary array reused to avoid allocations during cooldown ticking
+const _toDelete = [];
+
+// Temporaries reused to order file requests by priority
+const _requestOrder = [];
+const _requestPriority = new Map();
+
+
+/**
+ * @import { GSplatResource } from '../gsplat/gsplat-resource.js'
+ * @import { GSplatOctreeNodeLod } from './gsplat-octree-node.js'
+ * @import { GSplatAssetLoaderBase } from './gsplat-asset-loader-base.js'
+ */
+
+class GSplatOctree {
+    /**
+     * @type {GSplatOctreeNode[]}
+     */
+    nodes;
+
+    /**
+     * Packed per-node axis-aligned bounds in octree local space for CPU hot paths (e.g. LOD).
+     * Length is {@link GSplatOctree.nodes}.length * 6. For node index `i`, base `b = i * 6`:
+     * `[minX, minY, minZ, maxX, maxY, maxZ]` matching {@link GSplatOctreeNode.bounds}.
+     *
+     * @type {Float32Array}
+     */
+    nodeBoundsMinMax;
+
+    /**
+     * Per node, how far its half extents exceed the octree's typical node on each axis - zero on
+     * any axis where the node is no larger. Length is {@link GSplatOctree.nodes}.length * 3,
+     * `[x, y, z]` per node. The typical node is the median half extent on each axis, so it follows
+     * the content: a node standing out from its neighbours in size, such as a sparse region the
+     * generator left as one wide node, has an excess, while ordinary nodes have none. The distance
+     * pass trims only this excess - see GSplatParams#lodDistanceShrink.
+     *
+     * @type {Float32Array}
+     */
+    nodeBoundsExcess;
+
+    /**
+     * @type {{ url: string, lodLevel: number }[]}
+     */
+    files;
+
+    /**
+     * @type {number}
+     */
+    lodLevels;
+
+    /**
+     * Precomputed LOD selection tables, keyed by the LOD range they were built for and shared by
+     * every instance of this octree using that range.
+     *
+     * `lodRangeMin`/`lodRangeMax` are per placement, so instances of one octree may legitimately
+     * differ and each live range needs its own table - holding only the most recent would rebuild
+     * on every request. Entries are reference counted by the instances holding them and dropped at
+     * zero, so nothing is retained for a range that has fallen out of use, and nothing still in use
+     * can be evicted.
+     *
+     * @type {Map<string, GSplatLodTable>}
+     * @private
+     */
+    _lodTables = new Map();
+
+    /**
+     * The file URL of the container asset, used as the base for resolving relative URLs.
+     *
+     * @type {string}
+     */
+    assetFileUrl;
+
+    /**
+     * Resources of individual files, identified by their file index.
+     *
+     * @type {Map<number, GSplatResource>}
+     */
+    fileResources = new Map();
+
+    /**
+     * Reference counts for each file by file index. Index is fileIndex, value is reference count.
+     * When a file reaches zero references, it is scheduled for cooldown and unload.
+     *
+     * @type {Int32Array}
+     */
+    fileRefCounts;
+
+    /**
+     * Cooldown timers for files that reached zero references. Key is fileIndex, value is ticks
+     * remaining.
+     *
+     * @type {Map<number, number>}
+     */
+    cooldowns = new Map();
+
+    /**
+     * The latest file requests of each instance of this octree, mapped to their load priority.
+     * An instance replaces its own set on each of its LOD updates and keeps it in between, so the
+     * requests of an instance whose camera is not re-evaluating LOD stay alive.
+     *
+     * @type {Map<object, Map<number, number>>}
+     * @private
+     */
+    _requesters = new Map();
+
+    /**
+     * Files whose request changed since the last {@link GSplatOctree#flushRequests} - those in a
+     * newly submitted set, and those an instance stopped requesting. Each is issued again at its
+     * current highest priority, or withdrawn when no instance requests it any more.
+     *
+     * @type {Set<number>}
+     * @private
+     */
+    _changedRequests = new Set();
+
+    /**
+     * Token of the last {@link GSplatOctree#updateCooldownTick} that advanced the cooldowns.
+     *
+     * @type {number|undefined}
+     * @private
+     */
+    _cooldownToken;
+
+    /**
+     * Optional environment asset URL.
+     *
+     * @type {string|null}
+     */
+    environmentUrl = null;
+
+    /**
+     * Loaded environment resource.
+     *
+     * @type {GSplatResource|null}
+     */
+    environmentResource = null;
+
+    /**
+     * Reference count for environment usage.
+     */
+    environmentRefCount = 0;
+
+    /**
+     * Asset loader used for loading/unloading resources.
+     *
+     * @type {GSplatAssetLoaderBase|null}
+     */
+    assetLoader = null;
+
+    /**
+     * Whether this octree has been destroyed.
+     */
+    destroyed = false;
+
+    /**
+     * Number of update ticks before unloading unused file resources. Set from GSplatParams.
+     *
+     * @private
+     */
+    cooldownTicks = 100;
+
+    /**
+     * @param {string} assetFileUrl - The file URL of the container asset.
+     * @param {Object} data - The parsed JSON data containing info, filenames and tree.
+     */
+    constructor(assetFileUrl, data) {
+
+        this.lodLevels = data.lodLevels;
+        this.assetFileUrl = assetFileUrl;
+
+        // expand all file paths to full URLs upfront to avoid repeated joins later
+        const baseDir = path.getDirectory(assetFileUrl);
+        this.files = data.filenames.map(url => ({
+            url: path.isRelativePath(url) ? path.join(baseDir, url) : url,
+            lodLevel: -1
+        }));
+
+        // initialize per-file ref counts
+        this.fileRefCounts = new Int32Array(this.files.length);
+
+        // parse optional environment field and resolve path
+        if (data.environment) {
+            this.environmentUrl = path.isRelativePath(data.environment) ?
+                path.join(baseDir, data.environment) :
+                data.environment;
+        }
+
+        // Extract leaf nodes from hierarchical tree structure
+        const leafNodes = [];
+        this._extractLeafNodes(data.tree, leafNodes);
+
+        // Create nodes from the extracted leaf nodes
+        this.nodes = leafNodes.map((nodeData) => {
+            /** @type {GSplatOctreeNodeLod[]} */
+            const lods = [];
+
+            // Ensure we have exactly lodLevels entries
+            for (let i = 0; i < this.lodLevels; i++) {
+                const lodData = nodeData.lods[i.toString()];
+                if (lodData) {
+                    lods.push({
+                        file: this.files[lodData.file].url || '',
+                        // A level listed with no splats has nothing to load: give it no file, the
+                        // same as a level the manifest omits, so nothing downstream places or
+                        // fetches it (see GSplatLodTable's empty level).
+                        fileIndex: (lodData.count || 0) > 0 ? lodData.file : -1,
+                        offset: lodData.offset || 0,
+                        count: lodData.count || 0
+                    });
+
+                    // record LOD level for the file index
+                    this.files[lodData.file].lodLevel = i;
+                } else {
+                    // Missing LOD entry - fill with defaults
+                    lods.push({
+                        file: '',
+                        fileIndex: -1,
+                        offset: 0,
+                        count: 0
+                    });
+                }
+            }
+
+            return new GSplatOctreeNode(lods, nodeData.bound);
+        });
+
+        // precompute node bounds for CPU hot paths
+        const nodeCount = this.nodes.length;
+        const boundsFlat = new Float32Array(nodeCount * 6);
+        for (let i = 0; i < nodeCount; i++) {
+            const bounds = this.nodes[i].bounds;
+            const mn = bounds.getMin();
+            const mx = bounds.getMax();
+            const b = i * 6;
+            boundsFlat[b + 0] = mn.x;
+            boundsFlat[b + 1] = mn.y;
+            boundsFlat[b + 2] = mn.z;
+            boundsFlat[b + 3] = mx.x;
+            boundsFlat[b + 4] = mx.y;
+            boundsFlat[b + 5] = mx.z;
+        }
+        this.nodeBoundsMinMax = boundsFlat;
+        this.nodeBoundsExcess = GSplatOctree._computeBoundsExcess(boundsFlat, nodeCount);
+    }
+
+    /**
+     * Computes {@link GSplatOctree#nodeBoundsExcess} from packed node bounds.
+     *
+     * @param {Float32Array} boundsFlat - Packed per-node bounds, see nodeBoundsMinMax.
+     * @param {number} nodeCount - Number of nodes.
+     * @returns {Float32Array} The per-node, per-axis excess over the median half extent.
+     * @private
+     */
+    static _computeBoundsExcess(boundsFlat, nodeCount) {
+        const excess = new Float32Array(nodeCount * 3);
+        if (nodeCount === 0) return excess;
+
+        const half = new Float32Array(nodeCount);
+        for (let axis = 0; axis < 3; axis++) {
+            for (let i = 0; i < nodeCount; i++) {
+                half[i] = (boundsFlat[i * 6 + 3 + axis] - boundsFlat[i * 6 + axis]) * 0.5;
+            }
+            const sorted = half.slice().sort();
+            const typical = sorted[nodeCount >> 1];
+            for (let i = 0; i < nodeCount; i++) {
+                excess[i * 3 + axis] = Math.max(0, half[i] - typical);
+            }
+        }
+        return excess;
+    }
+
+    /**
+     * Destroys the octree and clears internal state. Does not force-unload resources as they may
+     * still be referenced by managers. Resources will be cleaned up when their reference counts
+     * reach zero through the normal cleanup mechanisms.
+     */
+    destroy() {
+        // Mark as destroyed so instances can detect forced cleanup
+        this.destroyed = true;
+
+        // Clear internal state
+        this._lodTables.clear();
+        this.fileResources.clear();
+        this.cooldowns.clear();
+        this._requesters.clear();
+        this._changedRequests.clear();
+
+        // Destroy and clear references
+        this.assetLoader?.destroy();
+        this.assetLoader = null;
+        this.environmentResource = null;
+    }
+
+    /**
+     * Trace out per-LOD counts of currently loaded file resources.
+     *
+     * @private
+     */
+    _traceLodCounts() {
+        Debug.call(() => {
+            if (!Tracing.get(TRACEID_OCTREE_RESOURCES)) return;
+
+            const loadedCounts = new Map();
+            for (const fileIndex of this.fileResources.keys()) {
+                const lod = this.files[fileIndex].lodLevel;
+                loadedCounts.set(lod, (loadedCounts.get(lod) || 0) + 1);
+            }
+
+            // report all LODs from 0..lodLevels-1
+            const maxLod = Math.max(0, this.lodLevels - 1);
+            const loadedSummary = Array.from({ length: maxLod + 1 }, (_, i) => loadedCounts.get(i) || 0).join(' / ');
+            Debug.trace(TRACEID_OCTREE_RESOURCES, `${this.assetFileUrl}: LOD resources in memory: ${loadedSummary}`);
+        });
+    }
+
+    /**
+     * Takes a reference to the LOD selection table for a LOD range, building it on first use. The
+     * caller must pass it back to {@link GSplatOctree#releaseLodTable} when it stops using it.
+     *
+     * The table has to be per range, because the range decides how bands past a node's data, and
+     * gaps in it, resolve.
+     *
+     * @param {number} rangeMin - Finest allowed LOD index.
+     * @param {number} rangeMax - Coarsest allowed LOD index.
+     * @returns {GSplatLodTable} The selection table, with its reference count incremented.
+     */
+    acquireLodTable(rangeMin, rangeMax) {
+        // A string key rather than packed arithmetic: nothing bounds lodLevels or the configured
+        // range, and a packed key would alias pairs once rangeMax passes the pack base, silently
+        // handing an instance a table for the wrong range.
+        const key = `${rangeMin},${rangeMax}`;
+        let table = this._lodTables.get(key);
+        if (!table) {
+            table = new GSplatLodTable(this, rangeMin, rangeMax);
+            this._lodTables.set(key, table);
+        }
+        table.refCount++;
+        return table;
+    }
+
+    /**
+     * Releases a reference taken by {@link GSplatOctree#acquireLodTable}, dropping the table once
+     * no instance holds it.
+     *
+     * @param {GSplatLodTable|null} table - The table to release. Null is ignored, so callers can
+     * release unconditionally.
+     */
+    releaseLodTable(table) {
+        if (!table) return;
+        Debug.assert(table.refCount > 0, `GSplatOctree: releasing a LOD table for range [${table.rangeMin}, ${table.rangeMax}] that holds no references.`);
+        if (--table.refCount <= 0) {
+            this._lodTables.delete(`${table.rangeMin},${table.rangeMax}`);
+        }
+    }
+
+    /**
+     * Recursively extracts leaf nodes (nodes with 'lods' property) from the hierarchical tree.
+     *
+     * @param {Object} node - The current tree node to process.
+     * @param {Array} leafNodes - Array to collect leaf nodes.
+     * @private
+     */
+    _extractLeafNodes(node, leafNodes) {
+        if (node.lods) {
+            // This is a leaf node with LOD data
+            leafNodes.push({
+                lods: node.lods,
+                bound: node.bound
+            });
+        } else if (node.children) {
+            // This is a branch node, recurse into children
+            for (const child of node.children) {
+                this._extractLeafNodes(child, leafNodes);
+            }
+        }
+    }
+
+    getFileResource(fileIndex) {
+        return this.fileResources.get(fileIndex);
+    }
+
+    /**
+     * Increments reference count for a file by index and cancels any pending cooldown.
+     *
+     * @param {number} fileIndex - Index of the file in `files` array.
+     */
+    incRefCount(fileIndex) {
+        Debug.assert(fileIndex >= 0 && fileIndex < this.files.length);
+
+        const count = this.fileRefCounts[fileIndex] + 1;
+        this.fileRefCounts[fileIndex] = count;
+
+        // cancel any pending cooldown
+        this.cooldowns.delete(fileIndex);
+    }
+
+    /**
+     * Decrements reference count for a file by index. When it reaches zero, either unload
+     * immediately (if cooldownTicks is 0) or schedule for cooldown.
+     *
+     * @param {number} fileIndex - Index of the file in `files` array.
+     * @param {number} cooldownTicks - Number of update ticks before unloading when unused. If 0,
+     * unload immediately.
+     */
+    decRefCount(fileIndex, cooldownTicks) {
+        Debug.assert(fileIndex >= 0 && fileIndex < this.files.length);
+
+        const count = this.fileRefCounts[fileIndex] - 1;
+        this.fileRefCounts[fileIndex] = count;
+        Debug.assert(count >= 0);
+
+        // When ref count reaches zero
+        if (count === 0) {
+            if (cooldownTicks === 0) {
+                // Unload immediately (e.g., during device loss)
+                this.unloadResource(fileIndex);
+            } else {
+                // Schedule for cooldown
+                this.cooldowns.set(fileIndex, cooldownTicks);
+            }
+        }
+    }
+
+    /**
+     * Unloads a resource for a file index if currently loaded.
+     *
+     * @param {number} fileIndex - Index of the file in `files` array.
+     */
+    unloadResource(fileIndex) {
+        Debug.assert(fileIndex >= 0 && fileIndex < this.files.length);
+
+        // If octree was destroyed, assetLoader is null - nothing to unload
+        if (!this.assetLoader) {
+            return;
+        }
+
+        const fullUrl = this.files[fileIndex].url;
+
+        // Always call unload - it handles loaded, loading, and queued resources
+        this.assetLoader.unload(fullUrl);
+
+        // Clean up loaded resource if present
+        if (this.fileResources.has(fileIndex)) {
+            this.fileResources.delete(fileIndex);
+
+            // trace updated LOD counts after change
+            this._traceLodCounts();
+        }
+    }
+
+    /**
+     * Advances cooldowns for zero-ref files and unloads those whose timers expired.
+     *
+     * @param {number} cooldownTicks - Number of ticks for new cooldowns, synced from GSplatParams.
+     * @param {number} [token] - Per-frame token. Every world using this octree ticks it, one per
+     * camera and layer, so a repeated token is ignored to advance the cooldowns once per frame.
+     * When omitted, every call advances them.
+     */
+    updateCooldownTick(cooldownTicks, token) {
+        if (token !== undefined) {
+            if (token === this._cooldownToken) {
+                return;
+            }
+            this._cooldownToken = token;
+        }
+
+        this.cooldownTicks = cooldownTicks;
+
+        if (this.cooldowns.size > 0) {
+            this.cooldowns.forEach((remaining, fileIndex) => {
+                if (remaining <= 1) {
+
+                    // just a safety to avoid unloading a file that was re-referenced
+                    if (this.fileRefCounts[fileIndex] === 0) {
+                        this.unloadResource(fileIndex);
+                    }
+                    _toDelete.push(fileIndex);
+                } else {
+
+                    // decrement cooldown timer
+                    this.cooldowns.set(fileIndex, remaining - 1);
+                }
+            });
+
+            // delete them from the cooldowns map
+            _toDelete.forEach(idx => this.cooldowns.delete(idx));
+            _toDelete.length = 0;
+        }
+    }
+
+    /**
+     * Checks whether a file has finished loading, and stores its resource if so.
+     *
+     * @param {number} fileIndex - The index of the file in the `files` array.
+     * @returns {boolean} True if the file is loaded.
+     */
+    pollFileResource(fileIndex) {
+        Debug.assert(fileIndex >= 0 && fileIndex < this.files.length);
+
+        // resource already loaded
+        if (this.fileResources.has(fileIndex)) {
+            return true;
+        }
+
+        // If octree was destroyed, assetLoader is null - nothing is loading
+        if (!this.assetLoader) {
+            return false;
+        }
+
+        // Check if the resource is now available from the asset loader
+        const res = this.assetLoader.getResource(this.files[fileIndex].url);
+        if (res) {
+            this.fileResources.set(fileIndex, res);
+
+            // The octree fully re-creates these resources on device loss, so the CPU-side
+            // ImageBitmap sources retained on the textures are not needed for re-upload.
+            res.releaseTextureSources?.();
+
+            // if the file finished loading and is no longer needed, schedule a cooldown
+            if (this.fileRefCounts[fileIndex] === 0) {
+                this.cooldowns.set(fileIndex, this.cooldownTicks);
+            }
+
+            // trace updated LOD counts after change
+            this._traceLodCounts();
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Ensures a file resource is loaded and available. This function:
+     * - Starts loading if not already started
+     * - Checks if loading completed and stores the resource if available
+     *
+     * A load it starts or continues keeps whatever priority it was last requested with.
+     *
+     * @param {number} fileIndex - The index of the file in the `files` array.
+     */
+    ensureFileResource(fileIndex) {
+        if (!this.pollFileResource(fileIndex) && this.assetLoader) {
+            // Start/continue loading (asset loader handles duplicates internally)
+            this.assetLoader.load(this.files[fileIndex].url);
+        }
+    }
+
+    /**
+     * Replaces the file requests of one instance of this octree - the files it waits for, mapped to
+     * their load priority. Nothing is loaded until {@link GSplatOctree#flushRequests}, which lets
+     * every instance sharing this octree contribute before the requests are ordered.
+     *
+     * @param {object} requester - The instance the requests belong to.
+     * @param {Map<number, number>} requests - File indices mapped to their load priority, higher
+     * loads first. Copied, so the caller may reuse the map.
+     */
+    submitRequests(requester, requests) {
+        let latest = this._requesters.get(requester);
+        if (!latest) {
+            latest = new Map();
+            this._requesters.set(requester, latest);
+        }
+
+        // both the files the requester dropped and the ones it keeps are reconsidered
+        const changed = this._changedRequests;
+        for (const fileIndex of latest.keys()) {
+            changed.add(fileIndex);
+        }
+
+        latest.clear();
+        for (const [fileIndex, priority] of requests) {
+            latest.set(fileIndex, priority);
+            changed.add(fileIndex);
+        }
+    }
+
+    /**
+     * Removes all file requests of an instance of this octree, when the instance is destroyed. This
+     * takes effect straight away, as there may be no later {@link GSplatOctree#flushRequests} to
+     * apply it: the files no other instance requests are withdrawn, and the rest are re-issued at
+     * the highest priority the remaining instances give them.
+     *
+     * @param {object} requester - The instance the requests belong to.
+     * @param {boolean} unloadNow - When true, a withdrawn download already in progress is unloaded
+     * right away instead of after a cooldown.
+     */
+    removeRequests(requester, unloadNow) {
+        const latest = this._requesters.get(requester);
+        if (!latest) {
+            return;
+        }
+        this._requesters.delete(requester);
+
+        for (const fileIndex of latest.keys()) {
+            if (!this.fileResources.has(fileIndex)) {
+                const priority = this._getRequestPriority(fileIndex);
+                if (priority === undefined) {
+                    this._changedRequests.delete(fileIndex);
+                    this._withdrawRequest(fileIndex, unloadNow);
+                } else {
+                    // still wanted by another instance, which may have given it a lower priority.
+                    // This only changes the priority of a queued load.
+                    this.assetLoader?.load(this.files[fileIndex].url, priority);
+                }
+            }
+        }
+    }
+
+    /**
+     * Issues the requests that changed since the last flush to the asset loader, each at the
+     * highest priority any instance gives it and highest first, and withdraws the files no
+     * instance requests any more.
+     *
+     * Every instance re-requests each file it still waits for on every LOD update, so a file no
+     * instance's latest requests contain is no longer wanted. If it is still queued it is simply
+     * dropped, as nothing has been fetched yet. A download already in progress is left to finish -
+     * canceling it would waste the transfer if the camera swings back - and if nothing references
+     * the file it gets a cooldown, so it is released once the cooldown expires unless it is
+     * requested again.
+     */
+    flushRequests() {
+        const changed = this._changedRequests;
+        if (changed.size === 0) {
+            return;
+        }
+
+        const loader = this.assetLoader;
+        if (loader) {
+            for (const fileIndex of changed) {
+                if (!this.fileResources.has(fileIndex)) {
+                    const priority = this._getRequestPriority(fileIndex);
+                    if (priority === undefined) {
+                        this._withdrawRequest(fileIndex, false);
+                    } else {
+                        _requestOrder.push(fileIndex);
+                        _requestPriority.set(fileIndex, priority);
+                    }
+                }
+            }
+
+            // Issue highest priority first. A free download slot goes to the first request that
+            // reaches it, the loader only orders the requests it has to queue.
+            _requestOrder.sort((a, b) => _requestPriority.get(b) - _requestPriority.get(a));
+
+            for (let i = 0; i < _requestOrder.length; i++) {
+                const fileIndex = _requestOrder[i];
+
+                // wanted again, so cancel a cooldown a withdrawn request left behind
+                if (this.fileRefCounts[fileIndex] === 0) {
+                    this.cooldowns.delete(fileIndex);
+                }
+
+                loader.load(this.files[fileIndex].url, _requestPriority.get(fileIndex));
+            }
+            _requestOrder.length = 0;
+            _requestPriority.clear();
+        }
+
+        changed.clear();
+    }
+
+    /**
+     * Returns the highest load priority any instance requests a file with.
+     *
+     * @param {number} fileIndex - The index of the file in the `files` array.
+     * @returns {number|undefined} The priority, or undefined when no instance requests the file.
+     * @private
+     */
+    _getRequestPriority(fileIndex) {
+        let best;
+        for (const requests of this._requesters.values()) {
+            const priority = requests.get(fileIndex);
+            if (priority !== undefined && (best === undefined || priority > best)) {
+                best = priority;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Withdraws the load of a file no instance requests any more. A queued load is dropped. One
+     * already in progress is left running, and if nothing references the file it is unloaded -
+     * after a cooldown, or right away when asked to.
+     *
+     * @param {number} fileIndex - The index of the file in the `files` array.
+     * @param {boolean} unloadNow - Unload an unreferenced download right away.
+     * @private
+     */
+    _withdrawRequest(fileIndex, unloadNow) {
+        const loader = this.assetLoader;
+        if (!loader || loader.dequeue(this.files[fileIndex].url)) {
+            return;
+        }
+
+        if (this.fileRefCounts[fileIndex] === 0) {
+            if (unloadNow) {
+                this.unloadResource(fileIndex);
+            } else if (!this.cooldowns.has(fileIndex)) {
+                this.cooldowns.set(fileIndex, this.cooldownTicks);
+            }
+        }
+    }
+
+    /**
+     * Increments reference count for environment.
+     */
+    incEnvironmentRefCount() {
+        this.environmentRefCount++;
+    }
+
+    /**
+     * Decrements reference count for environment. When it reaches zero, immediately unload.
+     */
+    decEnvironmentRefCount() {
+        this.environmentRefCount--;
+        Debug.assert(this.environmentRefCount >= 0);
+
+        // unload immediately when reaching zero
+        if (this.environmentRefCount === 0) {
+            this.unloadEnvironmentResource();
+        }
+    }
+
+    /**
+     * Ensures environment resource is loaded and available.
+     */
+    ensureEnvironmentResource() {
+        // If octree was destroyed, don't load anything
+        if (!this.assetLoader) {
+            return;
+        }
+
+        // no environment configured
+        if (!this.environmentUrl) {
+            return;
+        }
+
+        // resource already loaded
+        if (this.environmentResource) {
+            return;
+        }
+
+        // Check if the resource is now available from the asset loader
+        const res = this.assetLoader.getResource(this.environmentUrl);
+        if (res) {
+            this.environmentResource = res;
+
+            // if loaded but not needed, immediately unload
+            if (this.environmentRefCount === 0) {
+                this.unloadEnvironmentResource();
+            }
+
+            return;
+        }
+
+        // Start/continue loading (asset loader handles duplicates internally)
+        this.assetLoader.load(this.environmentUrl);
+    }
+
+    /**
+     * Unloads environment resource if currently loaded.
+     */
+    unloadEnvironmentResource() {
+        // If octree was destroyed, assetLoader is null - nothing to unload
+        if (!this.assetLoader) {
+            return;
+        }
+
+        if (this.environmentResource && this.environmentUrl) {
+            this.assetLoader.unload(this.environmentUrl);
+            this.environmentResource = null;
+        }
+    }
+}
+
+export { GSplatOctree };
