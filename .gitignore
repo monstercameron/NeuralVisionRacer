@@ -25,13 +25,40 @@ Thumbs.db
 # Logs and temp output
 *.log
 *.tmp
+logs/
 
-# Splat and model assets: third-party or large; regenerate or copy locally
+# Generated browser build (rebuild with wasm-bindgen; see README)
+web/pkg/
+
+# Scene data (levels): not part of the repository. See levels/README.md.
+levels/*
+!levels/README.md
+
+# Other projects (not part of the game). The Civic Si project keeps its research and plan; its generated output
+# (datasets, renders, training runs, videos, reviews, the reference photo) is ignored.
+other-projects/spike-porsche-source/
+other-projects/civic-si/*
+!other-projects/civic-si/research/
+!other-projects/civic-si/plan-v2-red-flat.md
+!other-projects/civic-si/reference/
+other-projects/civic-si/reference/*
+!other-projects/civic-si/reference/civic-si-reference.webp
+!other-projects/civic-si/video/
+other-projects/civic-si/video/*
+!other-projects/civic-si/video/seedance_input_margin60.png
+!other-projects/civic-si-image-plan.md
+
+# Splat and model assets: third-party or large; copy them in locally (see README)
 assets/*
 !assets/.gitkeep
-spike/data/
+# The car's licence and provenance notes ship with the repo even though the model itself does not.
+!assets/car/
+!assets/car/ATTRIBUTION.md
+!assets/car/*.source.json
+tools/spike/data/
 *.ply
 *.sog
+!docs/assets/car/porsche-992-gt3rs-2023.sog
 *.splat
 *.spz
 *.safetensors

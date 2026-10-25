@@ -1,0 +1,12 @@
+[package]
+name = "splat-wgsl"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 AND MIT"
+description = "WGSL shader sources extracted from the PlayCanvas engine (MIT), with a preprocessor for Rust/wgpu."
+
+[build-dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in", "wgsl-out"] }

@@ -1,0 +1,15 @@
+[package]
+name = "splat-hud"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Dashboard gauges for Splat Racer, designed per car in a text file and drawn into a premultiplied RGBA overlay."
+
+[dependencies]
+# Pure Rust, builds for wasm32-unknown-unknown. PNG support is left out of the library; only the example needs it.
+tiny-skia = { version = "=0.12.0", default-features = false, features = ["std", "simd"] }
+
+[dev-dependencies]
+tiny-skia = { version = "=0.12.0", default-features = false, features = ["std", "simd", "png-format"] }
+
+[workspace]

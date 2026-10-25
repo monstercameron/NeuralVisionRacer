@@ -1,0 +1,10 @@
+[package]
+name = "splat-game"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 AND MIT"
+description = "Pure state machines for Splat Racer: game mode, vehicle and asset lifecycle. No I/O and no dependencies."
+
+[dependencies]
+
+[workspace]

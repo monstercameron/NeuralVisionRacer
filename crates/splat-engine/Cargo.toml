@@ -1,0 +1,18 @@
+[package]
+name = "splat-engine"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 AND MIT"
+description = "Engine services for Splat Racer: engine.conf, the agent console and logs, voxel colliders and the rapier physics world."
+
+[dependencies]
+splat-render = { path = "../splat-render" }
+splat-game = { path = "../splat-game" }
+splat-camera = { path = "../splat-camera" }
+splat-ecs = { path = "../splat-ecs" }
+splat-car = { path = "../splat-car" }
+splat-hud = { path = "../splat-hud" }
+rapier3d = "0.36.1"
+serde_json = "1"
+
+[workspace]

@@ -1,0 +1,240 @@
+# Generic turbo sports car cluster: speedometer left, rev counter right, a boost gauge, gear and temperatures in
+# the middle, shift lights across the top.
+#
+# The rev counter's red zone and the shift lights follow the car's telemetry (redline_rpm, limiter_rpm), so this one
+# design suits any turbo car with a limit under 8,000 rpm.
+#
+# Format (see the splat-hud crate docs for every key):
+# - [hud]: name, anchor, size = w h (design units), height (share of screen height), margin.
+# - [gauge.<name>]: type = dial | bar | digital | gear | shift_lights | text | panel, center = x y measured from the
+#   panel's top-left corner (y down), then the type's keys. Gauges draw in file order; needles last.
+# - Colours are #RRGGBB or #RRGGBBAA. A comment is a # at the start of a line or a # followed by a space.
+# - rpm thresholds take a number or redline / limiter with an optional offset, e.g. `redline - 1500`.
+
+[hud]
+name = Turbo Sport
+anchor = bottom-center
+size = 720 300
+height = 0.33
+margin = 0.015
+
+[gauge.centre_pod]
+type = panel
+center = 360 164
+size = 150 264
+radius = 20
+color = #10141CD0
+border_color = #00C8FF30
+border_width = 1.5
+
+# --- speedometer --------------------------------------------------------------------------------------------------
+
+[gauge.speedo]
+type = dial
+channel = speed_kmh
+center = 160 168
+radius = 128
+min = 0
+max = 300
+start_angle = -135
+end_angle = 135
+major = 20
+minor = 10
+tick_length = 13
+tick_width = 2.6
+tick_color = #E8EEF4
+label_every = 40
+label_size = 14
+label_radius = 0.68
+label_color = #E8EEF4
+face_color = #12161EEB
+rim_color = #2C3444
+rim_width = 4
+sweep_color = #00C8FF50
+sweep_width = 13
+needle_color = #FF8C1A
+needle_length = 0.92
+needle_width = 6
+hub_color = #20262F
+hub_radius = 12
+
+[gauge.speed]
+type = digital
+channel = speed_kmh
+center = 160 232
+size = 24
+digits = 3
+color = #FFFFFF
+ghost_color = #FFFFFF0E
+
+[gauge.speed_units]
+type = text
+center = 160 257
+text = km/h
+size = 7
+color = #00C8FFCC
+
+# --- rev counter --------------------------------------------------------------------------------------------------
+
+[gauge.tach]
+type = dial
+channel = rpm
+center = 560 168
+radius = 128
+min = 0
+max = 8000
+start_angle = -135
+end_angle = 135
+major = 1000
+minor = 250
+tick_length = 13
+tick_width = 2.6
+tick_color = #E8EEF4
+label_every = 1000
+label_scale = 0.001
+label_size = 18
+label_radius = 0.7
+label_color = #E8EEF4
+warn_from = redline - 1000
+warn_to = redline
+warn_color = #FFB400
+red_from = redline
+red_color = #E61E1E
+zone_width = 6
+face_color = #12161EEB
+rim_color = #2C3444
+rim_width = 4
+sweep_color = #00C8FF50
+sweep_width = 13
+needle_color = #FF8C1A
+needle_length = 0.92
+needle_width = 6
+hub_color = #20262F
+hub_radius = 12
+
+[gauge.rpm_units]
+type = text
+center = 560 230
+text = x1000 RPM
+size = 8
+color = #00C8FFCC
+
+# --- centre: shift lights, boost, gear, temperatures ----------------------------------------------------------------
+
+[gauge.shift]
+type = shift_lights
+center = 360 14
+size = 260 12
+count = 12
+from = redline - 2000
+to = redline - 200
+colors = #00C8FF #00C8FF #00C8FF #00C8FF #28D23C #28D23C #28D23C #28D23C #FF2814 #FF2814 #FF2814 #FF2814
+off_color = #FFFFFF1A
+flash_color = #FF2814
+flash_at = limiter - 100
+shape = bar
+
+[gauge.boost]
+type = dial
+channel = boost_bar
+center = 360 108
+radius = 62
+min = -1
+max = 2
+start_angle = -120
+end_angle = 120
+major = 0.5
+minor = 0.1
+tick_length = 8
+tick_width = 2
+tick_color = #E8EEF4
+label_every = 1
+label_size = 11
+label_radius = 0.66
+label_color = #E8EEF4
+warn_from = 1.5
+red_from = 1.8
+zone_width = 4
+face_color = #0C1016F0
+rim_color = #2C3444
+rim_width = 3
+sweep_color = #00C8FF60
+sweep_width = 8
+sweep_from = 0                # vacuum sweeps backwards from 0
+needle_color = #FF8C1A
+needle_length = 0.9
+needle_width = 4
+hub_color = #20262F
+hub_radius = 7
+
+[gauge.boost_units]
+type = text
+center = 360 141
+text = BOOST BAR
+size = 7.5
+color = #00C8FFCC
+
+[gauge.gear]
+type = gear
+center = 360 206
+size = 38
+color = #FFFFFF
+neutral_color = #28D23C
+reverse_color = #FFB400
+weight = 0.16
+background = #00000080
+box = 50 54
+
+[gauge.water]
+type = bar
+channel = water_temp_c
+center = 360 252
+size = 116 5
+min = 40
+max = 140
+color = #E8EEF4
+track_color = #FFFFFF22
+low_below = 70
+low_color = #3C8CFF
+warn_from = 110
+red_from = 120
+label = WATER
+label_size = 7
+show_value = true
+units = °C
+value_size = 8
+
+[gauge.oil]
+type = bar
+channel = oil_temp_c
+center = 360 280
+size = 116 5
+min = 40
+max = 160
+color = #E8EEF4
+track_color = #FFFFFF22
+low_below = 80
+low_color = #3C8CFF
+warn_from = 130
+red_from = 140
+label = OIL
+label_size = 7
+show_value = true
+units = °C
+value_size = 8
+
+[gauge.launch_lamp]
+type = text
+center = 160 290
+text = LAUNCH
+size = 8
+color = #28D23C
+when = launch
+
+[gauge.tc_lamp]
+type = text
+center = 560 290
+text = TC
+size = 9
+color = #FFB400
+when = wheelspin

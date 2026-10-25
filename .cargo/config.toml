@@ -1,0 +1,14 @@
+# Every crate in crates/ is its own workspace; one shared target folder keeps them from each compiling (and storing)
+# their own copy of wgpu, rapier and the rest.
+[build]
+target-dir = "target"
+
+# Smaller dev builds: no debug info (the disk is tight), and optimised dependencies so WebP decoding and physics
+# are not painfully slow in debug runs.
+[profile.dev]
+debug = 0
+# The incremental cache grows by hundreds of MB; the disk is tight.
+incremental = false
+
+[profile.dev.package."*"]
+opt-level = 2

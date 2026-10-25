@@ -1,0 +1,10 @@
+[package]
+name = "splat-ecs"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 AND MIT"
+description = "A small entity-component-system for Splat Racer scenes: entities, typed components, resources and ordered systems. No dependencies."
+
+[dependencies]
+
+[workspace]

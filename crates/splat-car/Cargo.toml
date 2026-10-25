@@ -1,0 +1,10 @@
+[package]
+name = "splat-car"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Car mechanics for Splat Racer: engine torque curve, gearbox, driveline, tyres and aero, independent of the physics engine."
+
+[dependencies]
+
+[workspace]

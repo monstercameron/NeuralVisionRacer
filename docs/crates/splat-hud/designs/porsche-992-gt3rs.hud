@@ -1,0 +1,222 @@
+# Porsche 911 GT3 RS (992) instrument cluster, after the real car's centre rev counter.
+#
+# The 992 GT3 RS is naturally aspirated (4.0 l flat-six, 518 PS, 9,000 rpm), so there is no boost gauge. The
+# centre dial is the rev counter: 0-9,000 rpm with numbers 1-9 (x1000/min) and the red zone from 8,500 to 9,000,
+# with the digital speed and the gear inside it. A row of shift lights sits above it, and pods either side carry
+# water and oil temperature, oil pressure, and throttle and brake bars, as on the car's Track Screen.
+#
+# Format (see the splat-hud crate docs for every key):
+# - [hud]: name, anchor, size = w h (design units), height (share of screen height), margin.
+# - [gauge.<name>]: type = dial | bar | digital | gear | shift_lights | text | panel, center = x y measured from the
+#   panel's top-left corner (y down), then the type's keys. Gauges draw in file order; needles last.
+# - Colours are #RRGGBB or #RRGGBBAA. A comment is a # at the start of a line or a # followed by a space.
+
+[hud]
+name = Porsche 911 GT3 RS (992)
+anchor = bottom-right          # a chase camera looks over the car, so the cluster sits in the corner
+size = 600 300
+height = 0.30
+margin = 0.015
+
+# --- side pods -------------------------------------------------------------------------------------------------
+
+[gauge.left_pod]
+type = panel
+center = 92 236
+size = 156 100
+radius = 14
+color = #0A0A0CC8
+border_color = #FFFFFF1A
+border_width = 1
+
+[gauge.right_pod]
+type = panel
+center = 508 236
+size = 156 100
+radius = 14
+color = #0A0A0CC8
+border_color = #FFFFFF1A
+border_width = 1
+
+[gauge.water]
+type = bar
+channel = water_temp_c
+center = 92 218
+size = 124 6
+min = 40
+max = 140
+color = #F2F2F2
+track_color = #FFFFFF26
+low_below = 70                # cold: blue until the engine is warm
+low_color = #3C8CFF
+warn_from = 110
+red_from = 120
+label = WATER
+label_size = 8
+show_value = true
+units = °C
+value_size = 9
+
+[gauge.oil_temp]
+type = bar
+channel = oil_temp_c
+center = 92 262
+size = 124 6
+min = 40
+max = 160
+color = #F2F2F2
+track_color = #FFFFFF26
+low_below = 80
+low_color = #3C8CFF
+warn_from = 130
+red_from = 140
+label = OIL
+label_size = 8
+show_value = true
+units = °C
+value_size = 9
+
+[gauge.oil_pressure]
+type = bar
+channel = oil_pressure_bar
+center = 508 218
+size = 124 6
+min = 0
+max = 8
+color = #F2F2F2
+track_color = #FFFFFF26
+low_below = 1                 # low oil pressure is the warning
+low_color = #E61E1E
+label = OIL PRESS
+label_size = 8
+show_value = true
+decimals = 1
+units = BAR
+value_size = 9
+
+[gauge.throttle]
+type = bar
+channel = throttle
+center = 508 248
+size = 124 5
+min = 0
+max = 1
+color = #3CD25A
+track_color = #FFFFFF1F
+label = THROTTLE
+label_size = 7
+
+[gauge.brake]
+type = bar
+channel = brake
+center = 508 271
+size = 124 5
+min = 0
+max = 1
+color = #E63228
+track_color = #FFFFFF1F
+label = BRAKE
+label_size = 7
+
+# --- warning lamps above the pods --------------------------------------------------------------------------------
+
+[gauge.launch_lamp]
+type = text
+center = 92 172
+text = LAUNCH
+size = 10
+color = #3CD25A
+off_color = #FFFFFF00
+when = launch
+
+[gauge.tc_lamp]
+type = text
+center = 508 172
+text = TC
+size = 11
+color = #FFB400
+off_color = #FFFFFF00
+when = wheelspin
+
+# --- shift lights -------------------------------------------------------------------------------------------------
+
+[gauge.shift]
+type = shift_lights
+center = 300 14
+size = 280 14
+count = 10
+from = 7000
+to = 8600
+colors = #28D23C #28D23C #28D23C #28D23C #FFC800 #FFC800 #FFC800 #FF2814 #FF2814 #FF2814
+off_color = #FFFFFF1C
+flash_color = #3278FF
+flash_at = limiter - 100
+flash_hz = 8
+
+# --- the rev counter ----------------------------------------------------------------------------------------------
+
+[gauge.tach]
+type = dial
+channel = rpm
+center = 300 166
+radius = 132
+min = 0
+max = 9000
+start_angle = -130
+end_angle = 130
+major = 1000
+minor = 250
+tick_length = 15
+tick_width = 3
+tick_color = #F4F4F4
+labels_from = 1000            # numbers 1-9: no 0, as on the car
+label_every = 1000
+label_scale = 0.001
+label_size = 21
+label_radius = 0.7
+label_color = #F4F4F4
+red_from = 8500
+red_to = 9000
+red_color = #E61E1E
+zone_width = 6
+face_color = #0B0B0DF2
+rim_color = #3A3A40
+rim_width = 4
+needle_color = #FF3A1E
+needle_length = 0.93
+needle_width = 7
+hub_color = #1A1A1E
+hub_radius = 13
+
+[gauge.rpm_units]
+type = text
+center = 300 196
+text = x1000/min
+size = 8
+color = #FFFFFF99
+
+[gauge.gear]
+type = gear
+center = 300 128
+size = 30
+color = #FFFFFF
+neutral_color = #3CD25A
+reverse_color = #FFB400
+weight = 0.15
+
+[gauge.speed]
+type = digital
+channel = speed_kmh
+center = 300 228
+size = 28
+digits = 3
+color = #FFFFFF
+ghost_color = #FFFFFF10
+weight = 0.13
+
+[gauge.speed_units]
+type = text
+center = 300 256
+text = km/h
+size = 8
+color = #FFFFFF99

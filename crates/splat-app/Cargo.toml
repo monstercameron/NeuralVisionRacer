@@ -1,0 +1,22 @@
+[package]
+name = "splat-app"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 AND MIT"
+description = "The Splat Racer application: window, renderer, agent console and the fixed-step main loop."
+
+[[bin]]
+name = "splat-racer"
+path = "src/main.rs"
+
+[dependencies]
+splat-engine = { path = "../splat-engine" }
+splat-car = { path = "../splat-car" }
+splat-hud = { path = "../splat-hud" }
+splat-render = { path = "../splat-render" }
+wgpu = "30"
+pollster = "0.4"
+winit = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[workspace]

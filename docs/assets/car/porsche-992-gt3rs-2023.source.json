@@ -1,0 +1,69 @@
+{
+  "title": "Porsche 992 GT3RS 2023",
+  "scene_url": "https://superspl.at/scene/0b1ac6c1",
+  "creator": "b2mbiczek (Jakub Makar)",
+  "license": "CC BY 4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "credit": "Porsche 992 GT3RS 2023 by b2mbiczek, https://superspl.at/scene/0b1ac6c1, licensed under CC BY 4.0.",
+  "acquired_from": "Public viewer network responses observed in browser DevTools Protocol",
+  "downloaded_at_utc": "2026-10-24T16:00:13.477737+00:00",
+  "gaussian_count": 648207,
+  "sog_version": 2,
+  "sh_bands": 3,
+  "modifications": "Bundled original metadata and WebP data textures into a ZIP .sog; no recompression or Gaussian edits.",
+  "files": [
+    {
+      "file": "meta.json",
+      "url": "https://d28zzqy0iyovbz.cloudfront.net/0b1ac6c1/v1/meta.json",
+      "bytes": 15665,
+      "sha256": "1d0a7839b8ab004767b3eb61287e73583f1131b4a240e06ea25530feaba12da0"
+    },
+    {
+      "file": "means_l.webp",
+      "url": "https://d28zzqy0iyovbz.cloudfront.net/0b1ac6c1/v1/means_l.webp",
+      "bytes": 1942746,
+      "sha256": "afee0392b768b2f24e66935fb416345ea0fc99db9b38d8038a10312386a5423c"
+    },
+    {
+      "file": "means_u.webp",
+      "url": "https://d28zzqy0iyovbz.cloudfront.net/0b1ac6c1/v1/means_u.webp",
+      "bytes": 489136,
+      "sha256": "533d76989adb87d524812346f50923ff585959a8dd72fbe748aad443f9b54089"
+    },
+    {
+      "file": "quats.webp",
+      "url": "https://d28zzqy0iyovbz.cloudfront.net/0b1ac6c1/v1/quats.webp",
+      "bytes": 1994652,
+      "sha256": "cda284f7bd03743a78e7ff76c97757657dc36450f366442833477b041428a2ab"
+    },
+    {
+      "file": "scales.webp",
+      "url": "https://d28zzqy0iyovbz.cloudfront.net/0b1ac6c1/v1/scales.webp",
+      "bytes": 1794304,
+      "sha256": "ba890f738e77c2e781bb5da87add57c7c018852bbf81e2281115bf0b7e8096be"
+    },
+    {
+      "file": "sh0.webp",
+      "url": "https://d28zzqy0iyovbz.cloudfront.net/0b1ac6c1/v1/sh0.webp",
+      "bytes": 1947332,
+      "sha256": "618864197a42a4848c010905c89f557d14efc635b80378a5d5f74366c00daec3"
+    },
+    {
+      "file": "shN_centroids.webp",
+      "url": "https://d28zzqy0iyovbz.cloudfront.net/0b1ac6c1/v1/shN_centroids.webp",
+      "bytes": 2162650,
+      "sha256": "d16b17b036c198205f40963c81dee31949c4aa47cb4760019e7bc5d0cc2e28bc"
+    },
+    {
+      "file": "shN_labels.webp",
+      "url": "https://d28zzqy0iyovbz.cloudfront.net/0b1ac6c1/v1/shN_labels.webp",
+      "bytes": 874354,
+      "sha256": "92f8414835b5524f6a26a69b114c0583223f62b45286c967938c43ea8dee5602"
+    }
+  ],
+  "bundle": {
+    "file": "porsche-992-gt3rs-2023.sog",
+    "bytes": 11221659,
+    "sha256": "21ad415b3ab59ed0c079cd78108004d071af6dcdcddece7157c3557d72d91163"
+  }
+}

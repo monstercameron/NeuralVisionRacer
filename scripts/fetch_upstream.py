@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the exact MIT reference source files recorded in upstream-lock.json."""
+"""Fetch the exact MIT reference source files recorded in third_party/upstream-lock.json."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -50,7 +50,7 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.workers <= 16:
         parser.error("--workers must be between 1 and 16")
-    lock = json.loads((ROOT / "upstream-lock.json").read_text())
+    lock = json.loads((ROOT / "third_party" / "upstream-lock.json").read_text())
     jobs = [(source, entry) for source in lock["sources"] for entry in source["files"]]
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(fetch_file, jobs))

@@ -1,0 +1,10 @@
+[package]
+name = "splat-camera"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 AND MIT"
+description = "Third-person follow camera for the Splat Racer car: damped chase cam with orbit offsets. No dependencies."
+
+[dependencies]
+
+[workspace]

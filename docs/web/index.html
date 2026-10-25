@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splat Racer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101114; color: #d8dbe0; font: 13px ui-monospace, Menlo, monospace; }
+  #stage { position: fixed; inset: 0 0 180px 0; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  #hud { position: fixed; top: 8px; left: 8px; background: rgba(0,0,0,.45); padding: 6px 8px; border-radius: 6px; pointer-events: none; white-space: pre; }
+  #panel { position: fixed; left: 0; right: 0; bottom: 0; height: 170px; background: #17181c; border-top: 1px solid #2a2c33; display: flex; flex-direction: column; }
+  #log { flex: 1; overflow: auto; padding: 6px 10px; white-space: pre-wrap; }
+  #cmd { display: flex; border-top: 1px solid #2a2c33; }
+  #cmd input { flex: 1; background: #0d0e11; color: #e6e8ec; border: 0; padding: 8px 10px; font: inherit; outline: none; }
+  #cmd button { background: #2a2c33; color: #e6e8ec; border: 0; padding: 0 14px; font: inherit; cursor: pointer; }
+  #stop { position: fixed; top: 8px; right: 8px; background: rgba(0,0,0,.55); color: #e6e8ec; border: 1px solid #3a3d46; border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; }
+  #stop[aria-pressed="true"] { background: #7a2a2a; border-color: #a33; }
+  #stopped { position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,.6); padding: 10px 14px; border-radius: 8px; display: none; }
+  #loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(340px, calc(100vw - 32px)); background: #17181c; border: 1px solid #2a2c33; padding: 16px 18px; border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  #loading .title { font-size: 15px; letter-spacing: .04em; margin-bottom: 10px; }
+  #loading .bar { height: 6px; background: #22242a; border-radius: 3px; overflow: hidden; }
+  #loading #loading-fill { height: 100%; width: 0; background: #5b8def; transition: width .15s linear; }
+  #loading #loading-label { margin-bottom: 8px; color: #e6e8ec; }
+  #loading #loading-detail { margin-top: 8px; color: #8b8f98; font-size: 12px; }
+  #menu { position: fixed; inset: 0 0 180px 0; display: flex; align-items: center; justify-content: center; background: rgba(8,9,12,.55); backdrop-filter: blur(3px); }
+  #menu[hidden] { display: none; }
+  #menu .card { min-width: 280px; max-width: calc(100vw - 32px); background: #17181c; border: 1px solid #2a2c33; border-radius: 10px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  #menu h2 { margin: 0 0 4px; font-size: 15px; letter-spacing: .04em; }
+  #menu .hint { margin: 0 0 12px; color: #8b8f98; }
+  #menu .levels { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  #menu button { text-align: left; background: #22242a; color: #e6e8ec; border: 1px solid #2f323a; border-radius: 6px; padding: 8px 10px; font: inherit; cursor: pointer; }
+  #menu button:hover, #menu button:focus-visible { border-color: #5b8def; outline: none; background: #262a33; }
+  #menu button[aria-current="true"]::after { content: "  · playing"; color: #8b8f98; }
+  #menu .resume { width: 100%; text-align: center; background: #2b3a5c; border-color: #3d5488; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="view" width="1280" height="720"></canvas></div>
+<div id="hud">loading…</div>
+<button id="stop" aria-pressed="false" title="Stop drawing frames to free the CPU and GPU (P)">⏸ Stop rendering</button>
+<div id="stopped">Rendering stopped. Press P or ▶ to resume.</div>
+<div id="loading" role="status" aria-live="polite">
+  <div class="title">Splat Racer</div>
+  <div id="loading-label">Starting…</div>
+  <div class="bar"><div id="loading-fill"></div></div>
+  <div id="loading-detail"></div>
+</div>
+<div id="menu" hidden role="dialog" aria-modal="true" aria-labelledby="menu-title">
+  <div class="card">
+    <h2 id="menu-title">Paused</h2>
+    <p class="hint">Pick a level, or press Esc to resume.</p>
+    <div class="levels" id="menu-levels"></div>
+    <button class="resume" id="menu-resume">Resume</button>
+  </div>
+</div>
+<div id="panel">
+  <div id="log"></div>
+  <form id="cmd"><input id="line" placeholder="console: status | pause | resume | step 60 | reset | camera reset | entities | help" autocomplete="off"><button>run</button></form>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

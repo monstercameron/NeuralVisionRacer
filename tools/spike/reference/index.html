@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PlayCanvas reference render</title>
+<style>
+  html, body { margin: 0; background: #000; overflow: hidden; }
+  canvas { display: block; width: 960px; height: 540px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="960" height="540"></canvas>
+<script type="module">
+// Reference frame from the PlayCanvas engine itself (the port's target), for comparison with the Rust renderer.
+// Query: ?src=<.sog>&eye=x,y,z&target=x,y,z&gamma=srgb|none
+import * as pc from '../vendor/node_modules/playcanvas/build/playcanvas.mjs';
+
+const q = new URLSearchParams(location.search);
+const src = q.get('src') || '../data/porsche-992-gt3rs-2023.sog';
+const eye = (q.get('eye') || '1.649919,0.6149299,2.154667').split(',').map(Number);
+const target = (q.get('target') || '-0.15682238,-0.01742968,0.34792548').split(',').map(Number);
+const gamma = q.get('gamma') === 'none' ? pc.GAMMA_NONE : pc.GAMMA_SRGB;
+
+const canvas = document.getElementById('c');
+const device = await pc.createGraphicsDevice(canvas, { deviceTypes: ['webgl2'] });
+const options = new pc.AppOptions();
+options.graphicsDevice = device;
+options.componentSystems = [pc.RenderComponentSystem, pc.CameraComponentSystem, pc.GSplatComponentSystem];
+options.resourceHandlers = [pc.TextureHandler, pc.ContainerHandler, pc.GSplatHandler];
+const app = new pc.Application(canvas, options);
+app.setCanvasFillMode(pc.FILLMODE_NONE, 960, 540);
+app.setCanvasResolution(pc.RESOLUTION_FIXED, 960, 540);
+
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', {
+  fov: 50,
+  nearClip: 0.01,
+  farClip: 1000,
+  clearColor: new pc.Color(0, 0, 0, 1),
+  gammaCorrection: gamma,
+});
+camera.setPosition(eye[0], eye[1], eye[2]);
+camera.lookAt(target[0], target[1], target[2]);
+app.root.addChild(camera);
+
+// The spike viewer rotates splats 180 degrees about X; the same model transform is used here.
+const splat = new pc.Entity('splat');
+splat.setLocalEulerAngles(180, 0, 0);
+app.root.addChild(splat);
+
+const asset = new pc.Asset('splat', 'gsplat', { url: src });
+app.assets.add(asset);
+asset.ready(() => {
+  splat.addComponent('gsplat', { asset });
+  window.splatCount = asset.resource.numSplats;
+});
+app.assets.load(asset);
+app.start();
+
+let frames = 0;
+app.on('frameend', () => {
+  frames += 1;
+  if (frames === 10) window.referenceReady = true;
+});
+</script>
+</body>
+</html>

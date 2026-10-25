@@ -1,0 +1,81 @@
+# Porsche 911 GT3 RS (992, 2023), 7-speed PDK.
+#
+# Sources:
+# - Porsche: 386 kW (525 hp / 518 PS) at 8,500 rpm, 465 Nm at 6,300 rpm, 9,000 rpm redline, 4.0 l flat-six,
+#   1,450 kg DIN, 0-100 km/h 3.2 s, 296 km/h, 860 kg downforce at 285 km/h.
+#   https://stuttcars.com/?p=463488, https://rpmtechnik.co.uk/blog/992-gt3-vs-992-gt3-rs-top-trumps
+# - Gear ratios: Porsche's published 991.2 GT3 RS PDK set (3.75 / 2.381 / 1.7 / 1.344 / 1.114 / 0.957 / 0.844), which
+#   the 992 is reported to keep. https://newsroom.porsche.com (2019 911 GT3 RS technical specifications)
+# - Final drive 4.27: owner-reported for the 992 RS (shorter than the GT3's 4.19); not confirmed by Porsche.
+#   https://rennlist.com/forums/992-gt3-and-gt2rs-forum/1386170-992-gt3-rs-gear-and-final-drive-ratios.html
+# Values marked "estimate" are fitted, not published: the torque curve between its published points, the drag area
+# (fitted so 386 kW tops out near 296 km/h), weight distribution, centre-of-gravity height and tyre grip.
+
+[car]
+name = Porsche 911 GT3 RS (992)
+mass_kg = 1450
+layout = rear-engine          # engine behind the rear axle
+drive = rwd
+weight_front = 0.39           # estimate: share of static weight on the front axle
+cog_height_m = 0.45           # estimate
+length_m = 4.572
+wheelbase_m = 2.457
+track_front_m = 1.614
+track_rear_m = 1.588
+front_overhang_m = 1.00       # estimate: nose to front axle
+
+[engine]
+type = 4.0 l naturally aspirated flat-six
+idle_rpm = 1000
+redline_rpm = 9000
+limiter_rpm = 9000
+# rpm:Nm. 465 Nm at 6,300 and 434 Nm at 8,500 (386 kW) are published; the rest is an estimate of the shape.
+torque_curve = 1000:290 2000:330 3000:370 4000:415 5000:445 6300:465 7000:462 8000:448 8500:434 9000:405
+friction_nm = 45              # estimate: engine braking torque at redline, closed throttle
+inertia_kgm2 = 0.12           # estimate: crank, lightweight flywheel and clutch
+launch_rpm = 5500             # PDK launch control hold
+clutch_lock_kmh = 36          # estimate: launch control's clutch slip has faded out by this speed
+
+[gearbox]
+type = pdk
+ratios = 3.75 2.381 1.70 1.344 1.114 0.957 0.844
+reverse = 3.42                # estimate
+final_drive = 4.27
+shift_time_s = 0.06           # torque interruption per shift
+efficiency = 0.90
+upshift_rpm = 8800
+downshift_rpm = 4200
+
+[tyres]
+front = 275/35 ZR20
+rear = 335/30 ZR21
+front_radius_m = 0.350
+rear_radius_m = 0.367
+grip_mu = 1.35                # estimate: Michelin Pilot Sport Cup 2 R, dry
+rolling_resistance = 0.012
+
+[aero]
+drag_area_m2 = 0.97           # estimate: Cd × frontal area, fitted to 296 km/h
+downforce_area_m2 = 2.24      # Cl × area from 860 kg at 285 km/h
+air_density = 1.2
+
+[steering]
+max_angle_deg = 30            # estimate: front wheel lock at parking speed
+speed_sensitivity_mps = 25    # the lock halves by this speed, so the car stays stable at speed
+
+[cooling]
+# Estimates for the dashboard's gauges: coolant settles at water_cruise_c, plus water_load_c at full power; oil runs
+# oil_above_water_c hotter, plus oil_load_c at sustained full power and revs. Time constants in seconds.
+water_cruise_c = 88
+water_load_c = 10
+oil_above_water_c = 8
+oil_load_c = 22
+water_tau_s = 40
+oil_tau_s = 90
+start_water_c = 82            # the car starts warmed up, as after a sighting lap
+start_oil_c = 85
+boost_lag_s = 0.35            # turbo lag (no turbo on the GT3 RS: boost_bar is 0)
+
+[brakes]
+max_decel_g = 1.6             # estimate: carbon-ceramics on Cup tyres, before downforce
+front_bias = 0.65
