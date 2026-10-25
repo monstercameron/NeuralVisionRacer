@@ -1,4 +1,10 @@
-# Splat Racer
+# NeuralVisionRacer
+
+**[Play the browser demo](https://monstercameron.github.io/NeuralVisionRacer/web/)** ·
+[Asset credits and licences](THIRD_PARTY.md)
+
+The Splat Racer prototype: Rust, WebGPU and real-world Gaussian splat scans. The public demo includes Saburi alley
+in Yazd and the Porsche car model. Use recent Chrome or Edge with WebGPU; the first load downloads scene assets.
 
 A racing game that drives through real-world scans. The levels are Gaussian splat scans (millions of coloured,
 semi-transparent blobs rendered as a scene), the car is a splat model of a real car, and the road under it is built
@@ -73,7 +79,10 @@ they reach each other by relative path. They share one build folder through [`.c
 
 ## Assets and levels (not in git)
 
-The repository is one tree, but two kinds of data are kept out of git on purpose:
+The full local asset library stays out of git. The browser demo under `docs/` includes only the CC BY 4.0 car and
+Saburi alley scene, with attribution. The other local scenes are not published.
+
+Outside the demo, two kinds of data are kept out of git on purpose:
 
 - **Assets** (the car model and the environment map) live in `assets/`. Git ignores them, and
   [`assets/README.md`](assets/README.md) says where they come from.
@@ -165,13 +174,22 @@ as many display refreshes as the GPU needs, so frame times stay even.
 
 ## Tests
 
-Each crate is tested on its own:
+Each native crate is tested on its own; the browser crate is checked against its WebAssembly target:
 
 ```bash
-for crate in crates/*; do (cd "$crate" && cargo test -q); done
+for crate in crates/*; do
+  [ "$crate" = crates/splat-web ] || cargo test --locked -q --manifest-path "$crate/Cargo.toml"
+done
+cargo check --locked --target wasm32-unknown-unknown --manifest-path crates/splat-web/Cargo.toml
 ```
 
 GPU tests check the sorter and the pool bookkeeping and skip themselves when no GPU adapter is available.
+
+## GitHub Pages demo
+
+`docs/` contains the deployable browser build. GitHub Pages serves `main` → `/docs`. To rebuild it from the local
+asset library, run `python3 scripts/build_pages.py`, then commit and push the updated `docs/` files. The public
+demo offers only levels present in that build; local development offers the other installed levels too.
 
 ## Third-party code
 

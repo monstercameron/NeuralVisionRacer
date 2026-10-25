@@ -51,6 +51,7 @@ other-projects/civic-si/video/*
 # Splat and model assets: third-party or large; copy them in locally (see README)
 assets/*
 !assets/.gitkeep
+!assets/README.md
 # The car's licence and provenance notes ship with the repo even though the model itself does not.
 !assets/car/
 !assets/car/ATTRIBUTION.md
@@ -64,3 +65,6 @@ tools/spike/data/
 *.safetensors
 *.ckpt
 *.pth
+
+# Unrelated local projects remain local, including their reference images and notes.
+other-projects/
