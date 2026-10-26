@@ -2,6 +2,7 @@
 // requestAnimationFrame. The engine ticks inside Viewer.frame(); this file only feeds it input and shows its state.
 import init, { Viewer } from "./pkg/splat_web.js";
 import { setupShaderMenu } from "./shader-menu.js";
+import { createAssetCache } from "./asset-cache.js";
 
 // Paths are relative to this page, which is served from /web/.
 // The levels with collision voxels, in the order L cycles through them. The level is `[level] path` from engine.conf,
@@ -55,11 +56,9 @@ function say(text) {
 // Downloaded files are kept in the browser's Cache Storage (not localStorage, which holds about 5 MB and cannot take
 // a 10 MB car). A cached copy is used only while the server still reports the same validator (ETag, else
 // Last-Modified, else length), so a rebuilt site or edited level is fetched again.
-const CACHE_NAME = "splat-racer-assets-v1";
-const VALIDATOR_HEADER = "x-splat-validator";
 
 // Counters cover asset payload requests through bytes(); validators/config requests are not payload totals.
-const assetMetrics = { requests: 0, completed: 0, failed: 0, in_flight: 0, network_bytes: 0, cache_bytes: 0, cache_hits: 0, last_request_ms: 0 };
+const assetMetrics = { requests: 0, completed: 0, failed: 0, in_flight: 0, network_bytes: 0, cache_bytes: 0, cache_hits: 0, validator_requests: 0, network_requests: 0, cache_opens: 0, last_request_ms: 0 };
 async function bytes(url, onProgress = () => {}) {
   const start = performance.now(); assetMetrics.requests++; assetMetrics.in_flight++;
   try { const data = await assetBytes(url, onProgress); assetMetrics.completed++; return data; }
@@ -67,57 +66,11 @@ async function bytes(url, onProgress = () => {}) {
   finally { assetMetrics.in_flight--; assetMetrics.last_request_ms = performance.now() - start; }
 }
 
-/// Bytes of `url`, from the cache when it is current, else downloaded (and then cached). `onProgress(loaded, total,
-/// fromCache)` reports as bytes arrive, for the loading screen.
-async function assetBytes(url, onProgress = () => {}) {
-  const store = typeof caches === "undefined" ? null : await caches.open(CACHE_NAME).catch(() => null);
-  let validator = null;
-  if (store) {
-    const head = await fetch(url, { method: "HEAD", cache: "no-store" }).catch(() => null);
-    if (head && head.ok) {
-      validator = head.headers.get("etag") || head.headers.get("last-modified") || head.headers.get("content-length");
-    }
-    const cached = validator && (await store.match(url));
-    if (cached && cached.headers.get(VALIDATOR_HEADER) === validator) {
-      const data = new Uint8Array(await cached.arrayBuffer());
-      assetMetrics.cache_hits++; assetMetrics.cache_bytes += data.length;
-      onProgress(data.length, data.length, true);
-      return data;
-    }
-  }
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-  const total = Number(response.headers.get("content-length")) || 0;
-  let data;
-  if (response.body) {
-    const reader = response.body.getReader();
-    const parts = [];
-    let loaded = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      parts.push(value);
-      loaded += value.length; assetMetrics.network_bytes += value.length;
-      onProgress(loaded, total || loaded, false);
-    }
-    data = new Uint8Array(loaded);
-    let at = 0;
-    for (const part of parts) { data.set(part, at); at += part.length; }
-  } else {
-    data = new Uint8Array(await response.arrayBuffer());
-    assetMetrics.network_bytes += data.length;
-    onProgress(data.length, data.length, false);
-  }
-  if (store && validator) {
-    // Quota or private-browsing failures only mean the next visit downloads again.
-    const headers = { [VALIDATOR_HEADER]: validator, "content-type": response.headers.get("content-type") || "application/octet-stream" };
-    store.put(url, new Response(data, { headers })).catch(() => {});
-  }
-  return data;
-}
-
-/// Empties the asset cache (for the console: `splatClearCache()`).
-window.splatClearCache = () => (typeof caches === "undefined" ? Promise.resolve(false) : caches.delete(CACHE_NAME));
+// Reuse one Cache Storage handle. Cold assets go directly to GET; cached assets
+// still validate against the server before reuse.
+const assetCache = createAssetCache(assetMetrics);
+const assetBytes = assetCache.bytes;
+window.splatClearCache = assetCache.clear;
 
 /// The loading screen: one bar for the files it is waiting on, with the current file and how much came from cache.
 const progress = {

@@ -81,3 +81,28 @@ costs. Unsupported timestamps are null, with queue latency kept separate. See th
 Regression coverage includes GPU sort/order and indirect arguments, wheel/body/caliper deformation, specular
 coverage, car sharpening/occlusion, HUD cache/blinks, DOF bypass equivalence, timestamp readback and bounded pending
 frames, plus the existing physics, collision and driving tests.
+
+## Repeatable browser comparisons
+
+Build the browser module, then retain a baseline with `python3 scripts/save_browser_baseline.py`.
+The snapshot stays under ignored `logs/browser-benchmark`; the helper refuses accidental replacement.
+Open `web/benchmark.html?level=saburi-alley-yazd&build=baseline&label=before&frames=120` on the local server.
+After changing/rebuilding the engine, run the same page with `build=current&label=after`.
+The harness uses the production WASM viewer, fixes the canvas at 1280×720 and the scene at LOD 1,
+pauses/settles physics, disables random grain/debug overlays and keeps the configured visual effects.
+It warms up 40 submitted frames, respects GPU backpressure, measures 120 submitted frames and then goes idle.
+Results include the exact WASM SHA-256, scene occupancy, CPU submission samples, presentation intervals and
+per-pass GPU statistics. Loading/compilation are excluded. Alternate before/after runs; don't benchmark
+while building or running other GPU tests. Treat frame throughput and overlapping pass spans separately.
+
+`web/post-validation.html` compares the production post shader with the saved baseline on real browser WebGPU,
+using grey ramps, colours, car/background depth fixtures, clarity, partial grade and peripheral blur.
+It reads back both outputs and requires every channel to differ by at most one 8-bit code value.
+These diagnostic pages are local developer tools; the Pages build does not ship them.
+
+Asset-cache checks: `node --experimental-default-type=module --test scripts/asset-cache.test.mjs`.
+With the local server running, `node --experimental-default-type=module scripts/asset-cache-benchmark.mjs <output.json>`
+compares cold/warm requests against commit `6346b7b` using actual Saburi chunk files and payload hashes.
+Cold assets now skip the unnecessary HEAD and use the GET response's validator; warm entries still validate.
+One cache handle is reused per page, and unavailable/unreadable caches fall back to network loading.
+The asset profiler reports validator requests, payload network requests and cache opens separately.

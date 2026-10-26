@@ -44,7 +44,7 @@ def main() -> None:
 
     subprocess.run(["wasm-bindgen", "--target", "web", "--out-dir", str(DOCS / "web/pkg"), str(WASM)], cwd=ROOT, check=True)
     (DOCS / "web").mkdir(exist_ok=True)
-    for name in ["index.html", "main.js", "shader-menu.js"]:
+    for name in ["index.html", "main.js", "shader-menu.js", "asset-cache.js"]:
         shutil.copy2(ROOT / "web" / name, DOCS / "web" / name)
 
     config = (ROOT / "engine.conf").read_text()
