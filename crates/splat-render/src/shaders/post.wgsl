@@ -21,12 +21,20 @@ struct PostUniforms {
     shadow_tint: vec4f,
     // rgb: tint added to the highlights.
     highlight_tint: vec4f,
-    // x: car sharpening, y: wider local contrast; zw unused.
+    // x: car sharpening, y: wider local contrast, z: portal strength, w: rim width at 1080p.
     car: vec4f,
     // x: exposure stops, y: warm/cool, z: magenta/green, w: neutral black floor.
     film: vec4f,
     // Projected car centre/radii (uv); a soft region fills holes in the core depth mask.
     car_region: vec4f,
+    // xy: angular car centre, z: angular aperture radius, w: car view depth.
+    portal_target: vec4f,
+    // Soft radius multiple, near-splat reach, foreground depth margin, preserved world floor height.
+    portal_cut: vec4f,
+    // Inverse projection xy scale and projection z coefficients for depth reconstruction.
+    portal_projection: vec4f,
+    // Row Y of inverse view: reconstruct the preserved road height.
+    portal_world_y: vec4f,
 };
 
 @group(0) @binding(0) var scene: texture_2d<f32>;
@@ -171,6 +179,57 @@ fn fringed(uv: vec2f, offset: vec2f) -> vec3f {
     return vec3f(r, g, b);
 }
 
+// A recessed dark reveal, champagne inner lip and cool outer hairline. The rim is
+// attached to foreground material at the aperture: no ring on open sky, road or car.
+fn framePortal(uv: vec2f, colour: vec3f) -> vec3f {
+    if (post.car.z <= 0.0 || post.car.w <= 0.0 || post.portal_target.w <= 0.0) { return colour; }
+    let ray = (uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0)) * post.portal_projection.xy;
+    let delta = ray - post.portal_target.xy;
+    let normal = delta / max(length(delta), 0.0001);
+    let radius = (post.portal_target.z + post.portal_cut.y / post.portal_target.w) * post.portal_cut.x;
+    let focal_px = 0.5 / (post.frame.z * post.portal_projection.y);
+    let distance = (length(delta) - radius) * focal_px;
+    let scale = 1.0 / (post.frame.z * 1080.0);
+    let width = post.car.w * scale;
+    let aa = max(0.8, scale);
+    let band = smoothstep(-aa, aa, distance + width * 0.12)
+             * (1.0 - smoothstep(width - aa, width + aa, distance));
+    if (band <= 0.0) { return colour; }
+    let size = vec2f(textureDimensions(level_depth));
+    let px = vec2i(uv * size);
+    if (visibleCar(px)) { return colour; }
+    // Read just outside the lip, where foreground coverage is retained. This
+    // bridges subpixel holes in splats while keeping open street unframed.
+    let probe_ray = post.portal_target.xy + normal * (radius + (width + 3.0 * scale) / focal_px);
+    let probe_uv = probe_ray / post.portal_projection.xy * vec2f(0.5, -0.5) + vec2f(0.5);
+    let probe = clamp(vec2i(probe_uv * size), vec2i(0), vec2i(size) - vec2i(1));
+    // A short tangential gather closes tiny holes in Gaussian depth coverage.
+    let tangent = vec2i(round(vec2f(-normal.y, -normal.x) * 3.0 * scale));
+    let limit = vec2i(size) - vec2i(1);
+    let depth = min(textureLoad(level_depth, probe, 0),
+        min(textureLoad(level_depth, clamp(probe + tangent, vec2i(0), limit), 0),
+            textureLoad(level_depth, clamp(probe - tangent, vec2i(0), limit), 0)));
+    if (depth >= 1.0) { return colour; }
+    let z = post.portal_projection.w / (depth + post.portal_projection.z);
+    if (z >= post.portal_target.w - post.portal_cut.z) { return colour; }
+    let world_y = dot(post.portal_world_y, vec4f(ray * z, -z, 1.0));
+    let floor_mask = smoothstep(post.portal_cut.w, post.portal_cut.w + 0.12, world_y);
+    let light = clamp(dot(normal, normalize(vec2f(-0.6, 0.8))) * 0.5 + 0.5, 0.0, 1.0);
+    let bevel = distance / max(width, 1.0);
+    var metal = mix(vec3f(0.035, 0.049, 0.058), vec3f(0.16, 0.20, 0.22), light);
+    metal *= 0.65 + 0.35 * smoothstep(0.2, 0.8, bevel);
+    let lip = 1.0 - smoothstep(0.6 * scale, 1.6 * scale, abs(distance - width * 0.19));
+    metal = mix(metal, mix(vec3f(0.30, 0.25, 0.18), vec3f(0.85, 0.77, 0.57), light), lip * 0.85);
+    let seam = 1.0 - smoothstep(0.4 * scale, 1.2 * scale, abs(distance - width * 0.82));
+    metal = mix(metal, vec3f(0.35, 0.47, 0.52), seam * (0.25 + 0.30 * light));
+    // Recessed fastener slots at eight evenly spaced points, within the bevel.
+    let angle = atan2(normal.y, normal.x);
+    let slot = smoothstep(0.997, 0.9995, cos(angle * 8.0))
+             * smoothstep(0.35, 0.48, bevel) * (1.0 - smoothstep(0.62, 0.74, bevel));
+    metal = mix(metal, vec3f(0.025, 0.031, 0.035), slot * 0.85);
+    return mix(colour, metal, band * floor_mask * post.car.z * 0.88);
+}
+
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4f {
     let uv = in.uv;
@@ -223,6 +282,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
     if (grade > 0.0) {
         colour = mix(colour, filmGrade(colour, radius), clamp(grade, 0.0, 1.0));
     }
+
+    colour = framePortal(uv, colour);
 
     // Film grain, stronger in the mid-tones, new every frame.
     if (post.strength.z > 0.0) {

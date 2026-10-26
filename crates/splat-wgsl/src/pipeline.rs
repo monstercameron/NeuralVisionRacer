@@ -60,11 +60,13 @@ pub fn sog_v2_sh_overrides() -> Overrides {
     const FOG: &str = "// apply fog in linear space";
     assert!(OUTPUT.contains(FOG), "gsplat output hook changed");
     o.insert("gsplatOutputVS".into(), OUTPUT.replace(FOG, "color *= shadowTransmission;\n    color += carRadiance;\n    // apply fog in linear space"));
-    o.insert("gsplatModifyPS".into(), include_str!("local/carClarityPS.wgsl").into());
+    o.insert("gsplatModifyPS".into(), format!("{}\n{}",
+        include_str!("local/carClarityPS.wgsl"), include_str!("local/cutoutWindowPS.wgsl")));
     const PS: &str = include_str!("../shaders/gsplat/frag/gsplat.wgsl");
     const ALPHA: &str = "var alpha: half = normExp(A) * gaussianColor.a;";
     assert!(PS.contains(ALPHA), "gsplat alpha hook changed");
-    o.insert("gsplatPS".into(), PS.replace(ALPHA, "var alpha: half = half(carClarityAlpha(f32(normExp(A) * gaussianColor.a)));"));
+    o.insert("gsplatPS".into(), PS.replace(ALPHA, "var alpha: half = half(carClarityAlpha(f32(normExp(A) * gaussianColor.a))) * half(cutoutWindowAlpha());
+    if (alpha <= half(0.0)) { discard; }"));
     o
 }
 

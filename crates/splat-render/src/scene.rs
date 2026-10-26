@@ -188,7 +188,7 @@ fn assemble(
             if buffers.contains_key(&b.name) {
                 continue;
             }
-            let size = if b.name=="shadow_box" {crate::shadow::UNIFORM_BYTES} else if ty == "mat4x4f" { 64 } else { 16 };
+            let size = if b.name=="cutout_window" {64} else if b.name=="shadow_box" {crate::shadow::UNIFORM_BYTES} else if ty == "mat4x4f" { 64 } else { 16 };
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&b.name),
                 size,

@@ -6,6 +6,7 @@ export const SHADER_GROUPS = [
     ["render.level", "Level splats", true, "Level colour, depth, culling and sorting"],
     ["render.car", "Car splats", true, "Car colour, depth, culling and sorting"],
     ["render.car_cutout", "Car visibility cutout", true, "Clear nearby splats that obscure the car"],
+    ["effects.portal_frame", "Cutout portal frame", 1, "Recessed bevel and metallic lip on foreground openings"],
   ]],
   ["Car & road", [
     ["effects.wheels", "Wheel animation", true, "Wheel deformation, steering and suspension shaders"],

@@ -25,6 +25,9 @@ use crate::{COLOR_FORMAT, DEPTH_FORMAT};
 #[path = "frame_clarity_tests.rs"]
 mod clarity_tests;
 #[cfg(test)]
+#[path = "frame_portal_tests.rs"]
+mod portal_tests;
+#[cfg(test)]
 #[path = "frame_grade_tests.rs"]
 mod grade_tests;
 
@@ -145,6 +148,9 @@ pub struct PostSettings {
     pub car_clarity: f32,
     /// Subtract this faint alpha contribution from car splats, preserving opaque cores.
     pub car_haze_cutoff: f32,
+    /// Bevelled foreground cutout rim (0..1), with width in pixels at 1080p.
+    pub portal_frame: f32,
+    pub portal_width_px: f32,
 }
 
 /// The screen-effects pass (`shaders/post.wgsl`): peripheral blur, colour fringing, the grade and grain.
@@ -429,7 +435,7 @@ impl Frame {
         value["adapter"]=serde_json::json!({"name":self.adapter_info.name,"backend":format!("{:?}",self.adapter_info.backend),"device_type":format!("{:?}",self.adapter_info.device_type)});
         value["scene_metrics"]=serde_json::json!({"car":self.car.as_ref().map(|c|c.profile_json()),"level":self.level.iter().map(|c|c.profile_json()).collect::<Vec<_>>()});
         value["shadow"]=serde_json::json!({"sun_world":self.shadow.map(|(_,sun)|sun),"strength":self.shadow.map_or(0.0,|(s,_)|s),"softness":self.shadow_softness,"proxy_segments":self.car.as_ref().and_then(|c|c.shadow_proxy.as_ref()).map_or(0,|p|p.ellipsoids.len()),"highlight_occlusion":"surface-fitted proxy","receiver_attenuation":"linear light, Gaussian incidence weighted"});
-        value["effects"]=serde_json::json!({"dof":self.post.settings.dof,"car_sharpen":self.post.settings.car_sharpen,"car_clarity":self.post.settings.car_clarity,"haze_cutoff":self.post.settings.car_haze_cutoff,"blur":self.post.settings.blur,"blur_length":self.post.settings.blur_length,"blur_start":self.post.settings.blur_start,"fringe":self.post.settings.fringe,"grain":self.post.settings.grain,"dust":self.dust.strength(),"grade":self.post.settings.grade,"grade_profile":"cinematic-v2", "grade_contrast":self.post.settings.contrast,
+        value["effects"]=serde_json::json!({"dof":self.post.settings.dof,"car_sharpen":self.post.settings.car_sharpen,"car_clarity":self.post.settings.car_clarity,"portal_frame":self.post.settings.portal_frame,"portal_width_px":self.post.settings.portal_width_px,"haze_cutoff":self.post.settings.car_haze_cutoff,"blur":self.post.settings.blur,"blur_length":self.post.settings.blur_length,"blur_start":self.post.settings.blur_start,"fringe":self.post.settings.fringe,"grain":self.post.settings.grain,"dust":self.dust.strength(),"grade":self.post.settings.grade,"grade_profile":"cinematic-v2", "grade_contrast":self.post.settings.contrast,
             "grade_saturation":self.post.settings.saturation,"grade_vignette":self.post.settings.vignette,
             "grade_exposure_ev":self.post.settings.grade_exposure_ev,"grade_temperature":self.post.settings.grade_temperature,
             "grade_tint":self.post.settings.grade_tint,"grade_shoulder":self.post.settings.grade_shoulder,
@@ -714,6 +720,22 @@ impl Frame {
         let car_items=car.map_or(0,|c|u64::from(c.active_slots()));
         let queue = &self.queue;
         let dof_active = self.post.settings.dof > 0.0 && self.post.settings.dof_radius_px > 0.0;
+        let portal = self.cutout.as_ref().filter(|_| car.is_some() && !level.is_empty()
+            && self.post.settings.portal_frame > 0.0 && self.post.settings.portal_width_px > 0.0)
+            .filter(|c| c.soft > 1.0 && camera::transform_point(&view.view, c.target)[2] < -0.01);
+        let mut aperture = [0.0; 16];
+        if let Some((cut, inverse)) = portal.zip(camera::inverse(&view.view)) {
+            let target = camera::transform_point(&view.view, cut.target);
+            let depth = -target[2];
+            aperture = [target[0]/depth, target[1]/depth, cut.radius/depth, depth,
+                cut.soft, cut.splat_reach, cut.depth_margin, cut.floor_y,
+                1.0/view.projection[0], 1.0/view.projection[5], view.projection[10], view.projection[14],
+                inverse[1], inverse[5], inverse[9], inverse[13]];
+        }
+        let mut window = aperture;
+        window[10] = 1.0 / self.width as f32;
+        window[11] = 1.0 / self.height as f32;
+        let window = f32_bytes(&window);
         let tire_marks = self.tires.prepare(queue, view, self.clock);
         let dust = self.dust.prepare(queue, view, self.clock);
         // Surface-fitted occluders share the sun with clearcoat; no extra GPU resource binding/pass.
@@ -726,7 +748,9 @@ impl Frame {
         for chunk in level {
             let data=shadow.zip(sun_level).map(|((proxy,to_car,strength,_),sun)|proxy.uniform(&camera::mul(&to_car,&self.level_model),sun,strength,self.shadow_softness,false));
             chunk.set_uniform(queue,"shadow_box",data.as_deref().unwrap_or(&off));
-            chunk.prepare_timed(queue,encoder,view,&self.level_model,self.cutout.as_ref().filter(|_| car.is_some()),timer,"level");
+            chunk.set_uniform(queue,"cutout_window",&window);
+            // The portal clips pixels consistently; use centre culling only for the legacy unframed cutout.
+            chunk.prepare_timed(queue,encoder,view,&self.level_model,self.cutout.as_ref().filter(|_| car.is_some() && portal.is_none()),timer,"level");
         }
         if let Some(car)=car {
             let data=shadow.map(|(proxy,to_car,strength,sun)|proxy.uniform(&camera::IDENTITY,crate::shadow::direction(&to_car,sun),strength,self.shadow_softness,true));
@@ -748,8 +772,8 @@ impl Frame {
         //    only matters where the car is drawn, so its prepass is clipped to the car's rectangle on screen and skipped
         //    when the car is off screen; that saves most of a second full draw of the level.
         {
-            //    The depth of field needs the level's depth everywhere, so with it on the prepass covers the frame.
-            let rect = if dof_active {
+            //    Depth of field and the geometry-attached portal rim need scene depth outside the car.
+            let rect = if dof_active || portal.is_some() {
                 Some([0, 0, self.width, self.height])
             } else {
                 crate::tire::union_rect(crate::tire::union_rect(car.and_then(|car| screen_rect(car.bounds, &view.model, view)), tire_marks.rect),dust.rect)
@@ -832,17 +856,18 @@ impl Frame {
             let car_region=car.and_then(|c|screen_rect(c.bounds,&view.model,view)).map_or([0.0;4],|[x,y,cw,ch]| {
                 [(x as f32+cw as f32*0.5)/w,(y as f32+ch as f32*0.5)/h,cw as f32*0.5/w,ch as f32*0.5/h]
             });
-            let uniform = f32_bytes(&[
+            let mut uniform = f32_bytes(&[
                 s.blur, s.fringe, s.grain, s.grade,
                 s.time, 1.0 / w, 1.0 / h, s.grade_shoulder.clamp(0.0,1.0),
                 s.contrast, s.saturation, s.vignette, s.blur_start,
                 s.shadow_tint[0], s.shadow_tint[1], s.shadow_tint[2], s.blur_length,
                 s.highlight_tint[0], s.highlight_tint[1], s.highlight_tint[2], 0.0,
-                s.car_sharpen.clamp(0.0,1.0), s.car_clarity.clamp(0.0,0.5), 0.0, 0.0,
+                s.car_sharpen.clamp(0.0,1.0), s.car_clarity.clamp(0.0,0.5), s.portal_frame.clamp(0.0,1.0), s.portal_width_px.clamp(0.0,24.0),
                 s.grade_exposure_ev.clamp(-3.0,3.0), s.grade_temperature.clamp(-1.0,1.0),
                 s.grade_tint.clamp(-1.0,1.0), s.grade_black_lift.clamp(0.0,0.04),
                 car_region[0],car_region[1],car_region[2],car_region[3],
             ]);
+            uniform.extend(f32_bytes(&aperture));
             queue.write_buffer(&p.uniform, 0, &uniform);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post"),
@@ -1020,7 +1045,7 @@ impl PostLayer {
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("post"),
-            size: 128,
+            size: 192,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });

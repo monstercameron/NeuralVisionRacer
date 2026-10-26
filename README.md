@@ -183,6 +183,13 @@ Everything tunable is in [`engine.conf`](engine.conf), in sections `[engine]`, `
 Keys are commented in place. Most take effect on
 restart or `reload`; the debug views and the HUD apply live. The console command `dump` prints the active settings.
 
+Foreground car cutouts have a recessed circular portal frame: a dark metal bevel, warm inner lip and etched
+fastener slots. The pixel aperture is shared by colour and depth, keeping the edge stable across Gaussian sizes.
+Road, sky, distant geometry and the visible car stay unframed. In **Esc → Scene rendering**, toggle **Cutout portal
+frame**, or use `set effects.portal_frame 0` / `1`; `effects.portal_width_px` controls the rim width at 1080p
+(default `18`). The rim shares the post pass. With depth of field off, it extends the level depth prepass across
+the frame to locate foreground occluders. `perf` includes its settings; post timings include its cost.
+
 Car sunlight controls are live: `set effects.car_specular 0` disables the added highlight; `1` restores it.
 `effects.car_roughness` adjusts its width (default `0.32`, modified by the level profile). Set
 `effects.level_sun false` to use the explicit world direction in `effects.sun` instead. `status.lighting` reports

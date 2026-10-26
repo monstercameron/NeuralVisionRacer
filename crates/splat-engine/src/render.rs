@@ -105,6 +105,8 @@ pub fn apply_effects(engine: &Engine, frame: &mut splat_render::frame::Frame, ti
         car_sharpen: config.effects_car_sharpen,
         car_clarity: config.effects_car_clarity,
         car_haze_cutoff: config.effects_car_haze_cutoff,
+        portal_frame: config.effects_portal_frame,
+        portal_width_px: config.effects_portal_width_px,
     });
     let mut light = crate::lighting::for_level(config);
     let (strength_scale,softness)=crate::lighting::shadow_profile(config);

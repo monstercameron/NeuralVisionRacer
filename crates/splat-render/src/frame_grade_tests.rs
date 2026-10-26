@@ -47,7 +47,7 @@ fn cinematic_grade_protects_neutrals_keeps_shadow_detail_and_bypasses_cleanly() 
     let post = PostLayer::new(&device, &source, &car, &level);
     let (output, view) = post_target(&device, 16, 16);
     let render = |strength: f32| {
-        // Exercise the actual production pipeline and its 128-byte WebGPU binding.
+        // Exercise the actual production pipeline and its 192-byte WebGPU binding.
         let mut uniforms = [0.0f32; 28];
         uniforms[3] = strength;
         uniforms[5] = 1.0 / 16.0; uniforms[6] = 1.0 / 16.0;

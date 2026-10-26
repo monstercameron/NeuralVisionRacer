@@ -24,7 +24,8 @@ use std::collections::BTreeMap;
 
 /// Bind-group layout entries grouped by `@group` index, built from a binding table.
 ///
-/// Uniforms are `Uniform` buffers visible to all stages. Textures are `Float` sampled textures;
+/// Uniforms are shared across stages except the local vertex shadow and fragment aperture blocks.
+/// Textures are `Float` sampled textures;
 /// the engine's unfilterable sentinel (RGBA32F codebook) is `filterable: false`. Samplers are
 /// `NonFiltering`, because the engine samples splat data with `textureLoad`, not filtered sampling.
 /// Storage buffers serve vertex animation and fragment opacity cleanup, so both stages can read them.
@@ -34,7 +35,13 @@ pub fn bind_group_entries(bindings: &[Binding]) -> BTreeMap<u32, Vec<wgpu::BindG
         let entry = match &b.kind {
             BindingKind::Uniform { .. } => wgpu::BindGroupLayoutEntry {
                 binding: b.binding,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                // Keep the portable 12-uniform per-stage budget: these two
+                // local blocks are consumed by one stage each.
+                visibility: match b.name.as_str() {
+                    "cutout_window" => wgpu::ShaderStages::FRAGMENT,
+                    "shadow_box" => wgpu::ShaderStages::VERTEX,
+                    _ => wgpu::ShaderStages::VERTEX_FRAGMENT,
+                },
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -232,3 +239,17 @@ pub fn gsplat_depth_pipeline(
 
 #[cfg(test)]
 mod shadow_gpu_tests;
+
+#[cfg(test)]
+mod portal_binding_tests {
+    #[test]
+    fn aperture_layout_fits_portable_uniform_budget_per_stage() {
+        let (_,_,bindings)=splat_wgsl::pipeline::compose_pipeline().unwrap();
+        let entries=super::bind_group_entries(&bindings);
+        for stage in [wgpu::ShaderStages::VERTEX,wgpu::ShaderStages::FRAGMENT] {
+            let count=entries.values().flatten().filter(|e| e.visibility.contains(stage)
+                && matches!(e.ty,wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,..})).count();
+            assert!(count<=12,"{stage:?}: {count} uniform buffers");
+        }
+    }
+}

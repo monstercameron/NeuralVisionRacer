@@ -171,9 +171,9 @@ engine_settings! {
     ("render.debug_lod_boxes", render_debug_lod_boxes: bool, true),
     ("render.frame_pacing", render_frame_pacing: String, "auto".to_string()),
     ("render.debug_colliders", render_debug_colliders: bool, true),
-    ("render.car_cutout_radius_m", render_car_cutout_radius_m: f32, 2.0),
+    ("render.car_cutout_radius_m", render_car_cutout_radius_m: f32, 2.2),
     ("render.car_cutout_floor_m", render_car_cutout_floor_m: f32, 0.3),
-    ("render.car_cutout_soft", render_car_cutout_soft: f32, 1.35),
+    ("render.car_cutout_soft", render_car_cutout_soft: f32, 1.12),
     ("render.car_cutout_splat_reach_m", render_car_cutout_splat_reach_m: f32, 0.25),
     ("render.car_cutout_depth_margin_m", render_car_cutout_depth_margin_m: f32, 0.5),
     // [camera]: the orbit camera, or the third-person chase camera that follows the car.
@@ -295,6 +295,8 @@ engine_settings! {
     ("effects.dof_radius_px", effects_dof_radius_px: f32, 8.0),
     ("effects.car_sharpen", effects_car_sharpen: f32, 0.85),
     ("effects.car_clarity", effects_car_clarity: f32, 0.18),
+    ("effects.portal_frame", effects_portal_frame: f32, 1.0),
+    ("effects.portal_width_px", effects_portal_width_px: f32, 18.0),
     ("effects.car_haze_cutoff", effects_car_haze_cutoff: f32, 0.02),
     // [hud]: the dashboard drawn over the frame.
     ("hud.enabled", hud_enabled: bool, true),
