@@ -64,7 +64,7 @@ pub struct Frame {
     height: u32,
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
-    /// The scene after the screen effects (`post`), with the HUD on top: what is presented and read back.
+    /// Offscreen post/HUD target for readback and the optional copy presentation path.
     post_target: wgpu::Texture,
     /// The scene after depth of field, which the screen effects read.
     dof_view: wgpu::TextureView,
@@ -95,6 +95,7 @@ pub struct Frame {
     visibility: [bool; 3],
     exposure: f32,
     frames_presented: u64,
+    direct_present: std::cell::Cell<bool>,
     overlay: OverlayLayer,
     lines: LineLayer,
     tires: crate::tire::TireLayer,
@@ -156,6 +157,7 @@ pub struct PostSettings {
 /// The screen-effects pass (`shaders/post.wgsl`): peripheral blur, colour fringing, the grade and grain.
 struct PostLayer {
     pipeline: wgpu::RenderPipeline,
+    surface_pipeline: Option<wgpu::RenderPipeline>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
@@ -177,6 +179,7 @@ struct DofLayer {
 /// A premultiplied RGBA image drawn over the finished frame (the dashboard HUD), and where.
 struct OverlayLayer {
     pipeline: wgpu::RenderPipeline,
+    surface_pipeline: Option<wgpu::RenderPipeline>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// The texture, its bind group and the rectangle `[x, y, width, height]` in pixels; `None` hides the overlay.
@@ -187,6 +190,8 @@ struct OverlayLayer {
 /// collision around the car (world space).
 struct LineLayer {
     pipeline: wgpu::RenderPipeline,
+    surface_pipeline: Option<wgpu::RenderPipeline>,
+    layout: wgpu::BindGroupLayout,
     lod: LineBatch,
     world: LineBatch,
 }
@@ -245,7 +250,7 @@ impl Frame {
         let dof = DofLayer::new(&device);
         let dof_group = dof.bind(&device, &color_view, &depth_level, &depth_car);
         let dof = DofLayer { group: Some(dof_group), ..dof };
-        let post = PostLayer::new(&device, &dof_view, &depth_car, &depth_level);
+        let mut post = PostLayer::new(&device, &dof_view, &depth_car, &depth_level);
         let post_raw = post.bind(&device, &color_view, &depth_car, &depth_level);
         if let Some(presenter) = presenter.as_mut() {
             presenter.blit_group = Some(blit_group(&device, presenter, &post_view));
@@ -255,8 +260,14 @@ impl Frame {
             Some(bundle) => Some(scene::build_car(&device, &queue, &pipelines, bundle, CAR_DEPTH_ALPHA).map_err(|e| format!("build car: {e}"))?),
             None => None,
         };
-        let overlay = OverlayLayer::new(&device);
-        let lines = LineLayer::new(&device);
+        let mut overlay = OverlayLayer::new(&device);
+        let mut lines = LineLayer::new(&device);
+        if let Some(presenter) = &presenter {
+            let format = presenter.config.format.add_srgb_suffix();
+            post.surface_pipeline = Some(PostLayer::pipeline_for(&device, &post.layout, format));
+            overlay.surface_pipeline = Some(OverlayLayer::pipeline_for(&device, &overlay.layout, format));
+            lines.surface_pipeline = Some(LineLayer::pipeline_for(&device, &lines.layout, format));
+        }
         let tires = crate::tire::TireLayer::new(&device, &depth_level, &depth_car);
         let dust = crate::dust::DustLayer::new(&device, &depth_level, &depth_car);
         let gpu_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -294,6 +305,7 @@ impl Frame {
             visibility: [true; 3],
             exposure: 1.0,
             frames_presented: 0,
+            direct_present: std::cell::Cell::new(true),
             overlay,
             lines,
             clock: None,
@@ -432,6 +444,7 @@ impl Frame {
         value["queue_latency_ms"]=self.queue_latency_ms().into();value["pending_frames"]=self.pending_frames().into();
         value["width"]=self.width.into();value["height"]=self.height.into();value["rendered_frames"]=self.frames_presented.into();
         value["scene_slots"]=serde_json::json!({"car":self.car.as_ref().map_or(0,|c|c.capacity()),"level":self.level.iter().map(|c|u64::from(c.capacity())).sum::<u64>()});
+        value["presentation"]=serde_json::json!({"path":if self.presenter.is_none(){"offscreen"}else if self.direct_present.get(){"direct_surface"}else{"offscreen_blit"},"surface_format":self.presenter.as_ref().map(|p|format!("{:?}",p.config.format.add_srgb_suffix()))});
         value["adapter"]=serde_json::json!({"name":self.adapter_info.name,"backend":format!("{:?}",self.adapter_info.backend),"device_type":format!("{:?}",self.adapter_info.device_type)});
         value["scene_metrics"]=serde_json::json!({"car":self.car.as_ref().map(|c|c.profile_json()),"level":self.level.iter().map(|c|c.profile_json()).collect::<Vec<_>>()});
         value["shadow"]=serde_json::json!({"sun_world":self.shadow.map(|(_,sun)|sun),"strength":self.shadow.map_or(0.0,|(s,_)|s),"softness":self.shadow_softness,"proxy_segments":self.car.as_ref().and_then(|c|c.shadow_proxy.as_ref()).map_or(0,|p|p.ellipsoids.len()),"highlight_occlusion":"surface-fitted proxy","receiver_attenuation":"linear light, Gaussian incidence weighted"});
@@ -446,11 +459,12 @@ impl Frame {
     pub fn profile_command(&self,line:&str)->Option<Result<serde_json::Value,String>> {
         let args:Vec<_>=line.split_whitespace().collect();if args.first()!=Some(&"perf"){return None;}
         Some(match args.as_slice(){
+            ["perf","present",mode] if ["direct","copy"].contains(mode)=>{self.direct_present.set(*mode=="direct");Ok(serde_json::json!({"direct_present":self.direct_present.get()}))},
             ["perf"]|["perf","trace"]=>Ok(self.profile_json()),
             ["perf","shaders"]=>Ok(crate::timing::catalogue()),
             ["perf","reset"]=>{self.reset_profile();Ok(serde_json::json!({"reset":true}))},
             ["perf","sample",n]=>match n.parse::<u64>(){Ok(n) if (1..=600).contains(&n)=>{self.profile_sample_every(n);Ok(serde_json::json!({"sample_every_frames":n,"gpu_available":self.gpu_timer.is_some()}))},_=>Err("sample interval must be 1..600 frames".into())},
-            _=>Err("perf | perf trace | perf shaders | perf reset | perf sample 1..600 | perf log on/off".into())
+            _=>Err("perf | perf trace | perf shaders | perf reset | perf sample 1..600 | perf present direct/copy | perf log on/off".into())
         })
     }
     pub fn profile_sample_every(&self,n:u64){if let Some(t)=&self.gpu_timer{t.set_interval(n);}}
@@ -624,7 +638,7 @@ impl Frame {
         }
     }
 
-    /// Renders `view` into the offscreen target and, with a surface, presents it.
+    /// Renders `view`, writing final passes directly to an available surface by default.
     pub fn render(&mut self, view: &View) {
         if !self.can_render() { return; }
         let frame = match self.presenter.as_ref() {
@@ -644,13 +658,16 @@ impl Frame {
             eprintln!("splat-racer: frame {} presented to the surface", self.frames_presented);
         }
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let timing = self.draw(&mut encoder, view);
-        if let (Some(frame), Some(presenter)) = (frame.as_ref(), self.presenter.as_ref()) {
-            let target = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-                format: Some(frame.texture.format().add_srgb_suffix()),
-                ..Default::default()
-            });
-            blit(presenter, &mut encoder, &target,self.gpu_timer.as_ref().and_then(|t|t.render("present_blit","surface",1,u64::from(self.width)*u64::from(self.height))));
+        let target = frame.as_ref().map(|frame| frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(frame.texture.format().add_srgb_suffix()),
+            ..Default::default()
+        }));
+        let direct = self.direct_present.get() && target.is_some();
+        let timing = self.draw_to(&mut encoder, view, target.as_ref().filter(|_| direct));
+        if !direct {
+            if let (Some(target), Some(presenter)) = (target.as_ref(), self.presenter.as_ref()) {
+                blit(presenter, &mut encoder, target,self.gpu_timer.as_ref().and_then(|t|t.render("present_blit","surface",1,u64::from(self.width)*u64::from(self.height))));
+            }
         }
         if let (Some(timer),Some(slot))=(&self.gpu_timer,timing) { timer.end(&mut encoder,slot); }
         self.queue.submit(Some(encoder.finish()));
@@ -710,6 +727,12 @@ impl Frame {
     }
 
     fn draw(&self, encoder: &mut wgpu::CommandEncoder, view: &View) -> Option<usize> {
+        self.draw_to(encoder, view, None)
+    }
+
+    fn draw_to(&self, encoder: &mut wgpu::CommandEncoder, view: &View, destination: Option<&wgpu::TextureView>) -> Option<usize> {
+        let final_target = destination.unwrap_or(&self.post_view);
+        let surface = destination.is_some();
         let timing=self.gpu_timer.as_ref().and_then(|timer|timer.begin());
         let timer=self.gpu_timer.as_ref();
         let stamp=|id,target,draws,items|timer.and_then(|t|t.render(id,target,draws,items));
@@ -872,7 +895,7 @@ impl Frame {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.post_view,
+                    view: final_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
@@ -882,7 +905,7 @@ impl Frame {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&p.pipeline);
+            pass.set_pipeline(p.surface_pipeline.as_ref().filter(|_| surface).unwrap_or(&p.pipeline));
             pass.set_bind_group(0, if dof_active { &p.group } else { &self.post_raw }, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -895,7 +918,7 @@ impl Frame {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("debug lines"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.post_view,
+                    view: final_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
@@ -905,7 +928,7 @@ impl Frame {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.lines.pipeline);
+            pass.set_pipeline(self.lines.surface_pipeline.as_ref().filter(|_| surface).unwrap_or(&self.lines.pipeline));
             pass.set_bind_group(0, &batch.group, &[]);
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..*count, 0..1);
@@ -917,7 +940,7 @@ impl Frame {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("overlay"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.post_view,
+                    view: final_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
@@ -931,7 +954,7 @@ impl Frame {
             let full = &self.overlay.current.as_ref().expect("checked").2;
             pass.set_viewport(full[0] as f32, full[1] as f32, full[2] as f32, full[3] as f32, 0.0, 1.0);
             pass.set_scissor_rect(x, y, w.max(1), h.max(1));
-            pass.set_pipeline(&self.overlay.pipeline);
+            pass.set_pipeline(self.overlay.surface_pipeline.as_ref().filter(|_| surface).unwrap_or(&self.overlay.pipeline));
             pass.set_bind_group(0, group, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -974,6 +997,35 @@ fn screen_rect(bounds: ([f32; 3], [f32; 3]), model: &Mat4, view: &View) -> Optio
 }
 
 impl PostLayer {
+    fn pipeline_for(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("post"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post.wgsl").into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("post"),
+            bind_group_layouts: &[Some(layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("post"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        pipeline
+    }
+
     fn new(device: &wgpu::Device, scene: &wgpu::TextureView, car_depth: &wgpu::TextureView, level_depth: &wgpu::TextureView) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post"),
@@ -1010,31 +1062,7 @@ impl PostLayer {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("post"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post.wgsl").into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("post"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("post"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[] },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: COLOR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = Self::pipeline_for(device, &layout, COLOR_FORMAT);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("post"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -1049,7 +1077,7 @@ impl PostLayer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut post = Self { pipeline, layout, sampler, uniform, group: Self::placeholder(device), settings: PostSettings::default() };
+        let mut post = Self { pipeline, surface_pipeline: None, layout, sampler, uniform, group: Self::placeholder(device), settings: PostSettings::default() };
         post.group = post.bind(device, scene, car_depth, level_depth);
         post
     }
@@ -1177,6 +1205,44 @@ impl DofLayer {
 }
 
 impl OverlayLayer {
+    fn pipeline_for(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("overlay"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/overlay.wgsl").into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("overlay"),
+            bind_group_layouts: &[Some(layout)],
+            immediate_size: 0,
+        });
+        let premultiplied = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("overlay"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState { color: premultiplied, alpha: premultiplied }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        pipeline
+    }
+
     fn new(device: &wgpu::Device) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("overlay"),
@@ -1199,68 +1265,26 @@ impl OverlayLayer {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("overlay"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/overlay.wgsl").into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("overlay"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let premultiplied = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
-            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-            operation: wgpu::BlendOperation::Add,
-        };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("overlay"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[] },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: COLOR_FORMAT,
-                    blend: Some(wgpu::BlendState { color: premultiplied, alpha: premultiplied }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = Self::pipeline_for(device, &layout, COLOR_FORMAT);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("overlay"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        Self { pipeline, layout, sampler, current: None }
+        Self { pipeline, surface_pipeline: None, layout, sampler, current: None }
     }
 }
 
 impl LineLayer {
-    fn new(device: &wgpu::Device) -> Self {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("debug lines"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
-        });
+    fn pipeline_for(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("debug lines"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/debug_lines.wgsl").into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("debug lines"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(layout)],
             immediate_size: 0,
         });
         let premultiplied = wgpu::BlendComponent {
@@ -1286,7 +1310,7 @@ impl LineLayer {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: COLOR_FORMAT,
+                    format,
                     blend: Some(wgpu::BlendState { color: premultiplied, alpha: premultiplied }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -1297,8 +1321,22 @@ impl LineLayer {
             multiview_mask: None,
             cache: None,
         });
+        pipeline
+    }
+
+    fn new(device: &wgpu::Device) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("debug lines"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let pipeline = Self::pipeline_for(device, &layout, COLOR_FORMAT);
         let (lod, world) = (LineBatch::new(device, &layout), LineBatch::new(device, &layout));
-        Self { pipeline, lod, world }
+        Self { pipeline, surface_pipeline: None, layout, lod, world }
     }
 }
 

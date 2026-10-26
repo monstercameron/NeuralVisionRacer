@@ -6,6 +6,8 @@ Repository baseline: `6346b7bc7c39e773543e28ee22392e21d384dcb5`; initial working
 
 Evidence: `/Users/earlcameron/Documents/Codex/2026-10-24/let/outputs/optimization-2026-10-26`. Browser-only GPU measurements; native backend timings are not acceptable browser evidence. Leave the user's active game tab/state intact. Run paired samples without concurrent builds/GPU tests. Keep CPU and GPU work distinct. Record noisy/unsupported timings honestly.
 
+The current goal also requires a commit about every 30 minutes and a **fresh Pages rebuild before every commit**. Use approximately 17:00, 17:30, 18:00, 18:30, 19:00, 19:30, 20:00 and final 20:29 UTC checkpoints. Verify packaged sources/config/WASM after each rebuild; don't commit a broken experiment to satisfy cadence. This requirement was added after the first loader commit.
+
 ## Work queue
 
 1. Establish repeatable browser WebGPU fixed-scene baseline; preserve raw samples, scene occupancy, dimensions and feature states.
@@ -33,12 +35,20 @@ Actual browser game startup succeeded with **104 cache hits, 122,005,402 cached 
 
 GPU timestamp pass spans overlap/coalesce on this browser (post and blit boundaries can coincide); use total GPU frame time, paired runs and operation counts, not a sum of exclusive pass costs. All measurements so far use browser WebGPU; no Metal optimization/native GPU benchmark was run.
 
+## Pass 2 — direct surface presentation
+
+Implemented a surface-format variant of the existing post/line/HUD pipelines, with a shared final draw path and the original offscreen/copy path retained for readback and comparison. `perf present direct|copy` switches the path live; profile metadata records the path/sRGB surface format. The direct path skips `present_blit` (8 final sampled passes versus 9 in the reference scene) and avoids about 7.37 MB of intermediate full-screen traffic at 1280×720; it does not reduce texture allocations or scene quality.
+
+Browser measurement uses the SAME compiled WASM binary for the two paths, fixed scene/camera/detail/dimensions, actual configured external car spec and dashboard. The harness was corrected to load those external files; earlier baseline measurements did not include the external dashboard, so do not compare their frame numbers with these HUD-enabled cases. The production game already loaded them correctly.
+
+First HUD-enabled pair: copy median **21.168128 ms**, direct **21.102592 ms**. Small, noise-scale timing difference; no FPS claim. Repeated runs are retained in `presentation-summary.json`. Full-resolution framebuffer PNGs were read through the diagnostic page: **zero changed channels** across all 1280×720 RGBA pixels, including the HUD. Surface format is BGRA8 sRGB in both cases; original copy and direct paths remain available. Browser resize/debug verification completed at 960×540 and 1280×720, with collision/LOD overlays both on and off; the rendered scene and dashboard remained intact. All work is WebGPU/wgpu, no Metal-specific code or native GPU benchmark.
+
 ## Continuation checkpoint
 
-First pass is ready to commit: loader, benchmark/validation tools, build-script module inclusion and documentation. Inspect Git status for completion. The current production Rust/WGSL remains baseline `6346b7b`; web/pkg is restored to its retained baseline snapshot. No final Pages rebuild/push yet; reserve that for accepted integrated work.
+First pass was committed as `5dcca2f`: loader, benchmark/validation tools, build-script module inclusion and documentation. The current production Rust/WGSL remains baseline `6346b7b`; web/pkg is restored to its retained baseline snapshot. The 17:00 UTC checkpoint rebuilt Pages (129 MB, 111 files), verified matching packaged JS/config/WASM and actual browser startup. The packaged game reported direct_surface/BGRA8 sRGB, 104 successful cache hits through one handle and zero failed loads. Rust renderer tests compile; 14 asset-loader tests pass. Copy/direct reference images remain byte-identical. Next scheduled checkpoint is about 17:30 UTC.
 
 Next priorities:
-1. Consider rendering post/debug/HUD directly to the acquired sRGB surface, keeping the offscreen path for screenshots. Current `Frame::render` always draws post/overlays to an intermediate RGBA8 target, then blits it to the surface; eliminating this last full-screen write/read/copy may reduce bandwidth. Needs format-specific post/line/overlay pipeline variants (browser surface BGRA8 sRGB versus offscreen RGBA8 sRGB), paired browser measurement, pixel/overlay validation and resize handling. This is a candidate, NOT implemented.
+1. Direct surface presentation is implemented and browser-verified; retain the copy/readback fallback. Baseline `Frame::render` drew post/overlays to an intermediate RGBA8 target, then blitted it to the surface; eliminating this last full-screen write/read/copy may reduce bandwidth. Needs format-specific post/line/overlay pipeline variants (browser surface BGRA8 sRGB versus offscreen RGBA8 sRGB), paired browser measurement, pixel/overlay validation and resize handling. Pass 2 verification and Pages rebuild completed for this checkpoint.
 2. Audit shadow/SH vertex repetition and portal clipping/overdraw, preserving shape/lighting/detail. Existing static benchmark has ~1.5M level slots and 648,207 car splats.
 3. CPU/physics/streaming/loading allocations remain to audit; see work queue.
 

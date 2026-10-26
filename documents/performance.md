@@ -106,3 +106,19 @@ compares cold/warm requests against commit `6346b7b` using actual Saburi chunk f
 Cold assets now skip the unnecessary HEAD and use the GET response's validator; warm entries still validate.
 One cache handle is reused per page, and unavailable/unreadable caches fall back to network loading.
 The asset profiler reports validator requests, payload network requests and cache opens separately.
+
+## Direct surface presentation
+
+The final post, debug lines and HUD can draw directly into the acquired sRGB surface. This removes the old
+post-target-to-surface blit without changing the scene/depth/DOF passes. Offscreen rendering/readback remains
+available, and the original copy path is retained for paired checks: `perf present direct` / `perf present copy`.
+`perf` reports the selected presentation path and surface format. Format-specific final pipelines preserve the
+browser's BGRA8 sRGB surface and the RGBA8 sRGB offscreen target. Resize reuses these pipelines and rebuilds inputs.
+At 1280×720 the direct path avoids an intermediate 3.69 MB colour write plus a 3.69 MB sampled read per frame;
+the optional readback/copy texture remains allocated. The profiler omits `present_blit` on the direct path.
+
+The initial 120-frame browser Saburi pair (configured dashboard and car spec, fixed LOD 1) changed median GPU frame
+time from 21.168 to 21.103 ms. That small difference is not a demonstrated FPS gain. The deterministic acceptance
+evidence is one fewer full-screen pass and byte-identical 1280×720 output including the dashboard. Raw paired
+measurements and images are retained in the optimization session evidence. Use `presentation=copy` or `direct`
+on the browser benchmark; `verify=1` additionally checks two resize sizes and debug overlays after measurements.

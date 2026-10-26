@@ -40,7 +40,21 @@ async function run() {
     data("../assets/car/porsche-992-gt3rs-2023.sog"), data(`${dir}/scene.voxel.json`),
     data(`${dir}/scene.voxel.bin`), data(`${dir}/viewer-settings.json`,true), data(`${dir}/lod-meta.json`)]);
   const viewer = await Viewer.create("view",config,car,voxels,binary,settings,`levels/${level}`);
+  // Match the game's external car spec and HUD rather than relying on built-ins.
+  const value = (section,key) => {
+    const part=(config.split(new RegExp(`^\\[${section}\\]`,"m"))[1] || "").split(/^\[/m)[0];
+    return part.match(new RegExp(`^${key}\\s*=\\s*([^#\\n]+)`,"m"))?.[1].trim();
+  };
+  const spec=value("vehicle","spec");
+  if(spec) viewer.set_car_spec(await (await fetch(`../${spec}`,{cache:"no-store"})).text());
+  const hud=value("hud","design");
+  if(hud) viewer.set_hud(hud.endsWith(".hud") ? await (await fetch(`../${hud}`,{cache:"no-store"})).text() : hud);
   const command = line => { const reply = JSON.parse(viewer.command(line)); if (!reply.ok) throw new Error(`${line}: ${reply.error}`); return reply.data; };
+  const presentation = params.get("presentation");
+  if (presentation) {
+    if (!["direct","copy"].includes(presentation)) throw new Error("Invalid presentation path");
+    command(`perf present ${presentation}`);
+  }
   command("perf log off"); command("pause"); command("step 180");
   const files = ["meta.json","means_l.webp","means_u.webp","quats.webp","scales.webp","sh0.webp","shN_labels.webp","shN_centroids.webp"];
   const dirs = JSON.parse(viewer.level_chunk_dirs(lod));
@@ -73,7 +87,25 @@ async function run() {
   // Let asynchronous timestamp readbacks finish without submitting additional frames.
   for (let i=0; i<8; i++) await raf();
   const profile = command("perf");
-  const report = {label, build, wasm_sha256, level, dimensions:[1280,720], fixed_lod:1, frames, chunks:dirs.length,
+  const verification = [];
+  if (params.get("verify") === "1") {
+    for (const [width,height] of [[960,540],[1280,720]]) {
+      const canvas=document.getElementById("view");canvas.width=width;canvas.height=height;
+      viewer.resize(width,height);
+      for (const enabled of [true,false]) {
+        command(`set render.debug_colliders ${enabled}`);
+        command(`set render.debug_lod_boxes ${enabled}`);
+        for (let i=0;i<4;) { const now=await raf();if(viewer.should_render(now)){viewer.frame(now);i++;} }
+        verification.push({width,height,debug:enabled});
+      }
+    }
+  }
+  // Capture in the submitting task so the WebGPU canvas has not been recycled.
+  viewer.frame(await raf());
+  const image = document.createElement("a"); image.id="reference-image"; image.download=`${label}.png`;
+  image.href=document.getElementById("view").toDataURL("image/png"); image.textContent="Download reference image";
+  result.before(image);
+  const report = {label, build, wasm_sha256, verification, level, dimensions:[1280,720], fixed_lod:1, frames, chunks:dirs.length,
     timestamp:new Date().toISOString(), user_agent:navigator.userAgent, cpu_submission_ms:cpu,
     raf_intervals_ms:intervals, profile};
   result.textContent = JSON.stringify(report,null,2);
