@@ -34,8 +34,9 @@ export class Viewer {
      * - `level_json`, `level_bin`: the level's `scene.voxel.json` and `scene.voxel.bin`. Pass empty arrays for no
      *   level, which keeps the flat ground plane.
      * - `viewer_settings`: the level's `viewer-settings.json` (its starting camera hints the spawn), or empty.
+     * - `level_path`: the selected level folder, including any URL override of engine.conf.
      */
-    static create(canvas_id: string, config_text: string, sog: Uint8Array, level_json: Uint8Array, level_bin: Uint8Array, viewer_settings: Uint8Array): Promise<Viewer>;
+    static create(canvas_id: string, config_text: string, sog: Uint8Array, level_json: Uint8Array, level_bin: Uint8Array, viewer_settings: Uint8Array, level_path: string): Promise<Viewer>;
     /**
      * One animation frame. `now_ms` is `requestAnimationFrame`'s timestamp. Runs whole engine ticks for the elapsed
      * time, then draws the current state.
@@ -93,14 +94,20 @@ export class Viewer {
      */
     set_car_spec(text: string): void;
     /**
-     * Driver controls: throttle and brake 0..1, steer -1 (left) .. 1 (right). They stay until changed. A pending
+     * Direction requests W/S and optional rear handbrake 0..1, steer -1 (left) .. 1 (right).
+     * Three-argument callers retain a released handbrake. Controls stay until changed. A pending
      * paddle shift is kept until the engine has stepped with it.
      */
-    set_controls(throttle: number, brake: number, steer: number): void;
+    set_controls(throttle: number, brake: number, steer: number, handbrake?: number | null): void;
     /**
      * Switches the dashboard design: a built-in name (`porsche-992-gt3rs`, `turbo-sport`) or a `.hud` file's text.
      */
     set_hud(design: string): void;
+    set_io_metrics(text: string): void;
+    /**
+     * The actual selected level (?level= can override the config). Also selects the embedded sunlight profile.
+     */
+    set_level_name(name: string): void;
     /**
      * Paddle shift: +1 up, -1 down.
      */
@@ -151,7 +158,7 @@ export interface InitOutput {
     readonly viewer_add_stream_chunk: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => [number, number];
     readonly viewer_camera_mode: (a: number) => [number, number];
     readonly viewer_command: (a: number, b: number, c: number) => [number, number];
-    readonly viewer_create: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => any;
+    readonly viewer_create: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => any;
     readonly viewer_frame: (a: number, b: number) => void;
     readonly viewer_frame_timings: (a: number) => [number, number];
     readonly viewer_level_chunk_dirs: (a: number, b: number, c: number) => [number, number, number, number];
@@ -165,8 +172,10 @@ export interface InitOutput {
     readonly viewer_render_eye: (a: number) => [number, number];
     readonly viewer_resize: (a: number, b: number, c: number) => void;
     readonly viewer_set_car_spec: (a: number, b: number, c: number) => [number, number];
-    readonly viewer_set_controls: (a: number, b: number, c: number, d: number) => void;
+    readonly viewer_set_controls: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly viewer_set_hud: (a: number, b: number, c: number) => [number, number];
+    readonly viewer_set_io_metrics: (a: number, b: number, c: number) => void;
+    readonly viewer_set_level_name: (a: number, b: number, c: number) => void;
     readonly viewer_shift: (a: number, b: number) => void;
     readonly viewer_should_render: (a: number, b: number) => number;
     readonly viewer_start_stream: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -180,8 +189,8 @@ export interface InitOutput {
     readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___js_sys_76b3957f13640b70___Function_fn_wasm_bindgen_7b0a4a0adf17f3da___JsValue_____wasm_bindgen_7b0a4a0adf17f3da___sys__Undefined___js_sys_76b3957f13640b70___Function_fn_wasm_bindgen_7b0a4a0adf17f3da___JsValue_____wasm_bindgen_7b0a4a0adf17f3da___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__33: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__34: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__35: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__36: (a: number, b: number, c: any) => [number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

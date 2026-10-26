@@ -1,6 +1,7 @@
 // Browser entry: fetches the assets, starts the WebAssembly viewer on the canvas, and drives it from
 // requestAnimationFrame. The engine ticks inside Viewer.frame(); this file only feeds it input and shows its state.
 import init, { Viewer } from "./pkg/splat_web.js";
+import { setupShaderMenu } from "./shader-menu.js";
 
 // Paths are relative to this page, which is served from /web/.
 // The levels with collision voxels, in the order L cycles through them. The level is `[level] path` from engine.conf,
@@ -57,9 +58,18 @@ function say(text) {
 const CACHE_NAME = "splat-racer-assets-v1";
 const VALIDATOR_HEADER = "x-splat-validator";
 
+// Counters cover asset payload requests through bytes(); validators/config requests are not payload totals.
+const assetMetrics = { requests: 0, completed: 0, failed: 0, in_flight: 0, network_bytes: 0, cache_bytes: 0, cache_hits: 0, last_request_ms: 0 };
+async function bytes(url, onProgress = () => {}) {
+  const start = performance.now(); assetMetrics.requests++; assetMetrics.in_flight++;
+  try { const data = await assetBytes(url, onProgress); assetMetrics.completed++; return data; }
+  catch (error) { assetMetrics.failed++; throw error; }
+  finally { assetMetrics.in_flight--; assetMetrics.last_request_ms = performance.now() - start; }
+}
+
 /// Bytes of `url`, from the cache when it is current, else downloaded (and then cached). `onProgress(loaded, total,
 /// fromCache)` reports as bytes arrive, for the loading screen.
-async function bytes(url, onProgress = () => {}) {
+async function assetBytes(url, onProgress = () => {}) {
   const store = typeof caches === "undefined" ? null : await caches.open(CACHE_NAME).catch(() => null);
   let validator = null;
   if (store) {
@@ -70,6 +80,7 @@ async function bytes(url, onProgress = () => {}) {
     const cached = validator && (await store.match(url));
     if (cached && cached.headers.get(VALIDATOR_HEADER) === validator) {
       const data = new Uint8Array(await cached.arrayBuffer());
+      assetMetrics.cache_hits++; assetMetrics.cache_bytes += data.length;
       onProgress(data.length, data.length, true);
       return data;
     }
@@ -86,7 +97,7 @@ async function bytes(url, onProgress = () => {}) {
       const { done, value } = await reader.read();
       if (done) break;
       parts.push(value);
-      loaded += value.length;
+      loaded += value.length; assetMetrics.network_bytes += value.length;
       onProgress(loaded, total || loaded, false);
     }
     data = new Uint8Array(loaded);
@@ -94,6 +105,7 @@ async function bytes(url, onProgress = () => {}) {
     for (const part of parts) { data.set(part, at); at += part.length; }
   } else {
     data = new Uint8Array(await response.arrayBuffer());
+    assetMetrics.network_bytes += data.length;
     onProgress(data.length, data.length, false);
   }
   if (store && validator) {
@@ -218,7 +230,7 @@ async function main() {
   progress.label("Starting the engine…");
   document.title = `Splat Racer · ${LEVEL.split("/").pop()}`;
   fitCanvas();
-  const viewer = await Viewer.create("view", configText, car, levelJson, levelBin, viewerSettings);
+  const viewer = await Viewer.create("view", configText, car, levelJson, levelBin, viewerSettings, `levels/${LEVEL.split("/").pop()}`);
   // The car spec and HUD design files named in engine.conf (paths relative to the repository root), so editing them needs
   // only a reload. A built-in HUD name needs no file.
   const specPath = confValue(configText, "vehicle", "spec");
@@ -234,6 +246,7 @@ async function main() {
   loading.remove();
   say("ready. The engine ticks in the browser; type `help` below.");
 
+  setupProfiler(viewer);
   let frames = 0;
   let lastHud = 0;
   // Stopping cancels the animation loop outright: no ticks, no sorting, no drawing, so the GPU and CPU go idle.
@@ -260,12 +273,12 @@ async function main() {
     stoppedNote.style.display = stopped ? "block" : "none";
   }
   stopButton.addEventListener("click", () => setStopped(!stopped));
-  // Driving: W/↑ throttle, S/↓ brake (held at a standstill: reverse), A/← D/→ steer, Q/E paddles, G auto/manual.
+  // W/S brake opposite motion to a full stop, then drive forward/reverse. Hold either Shift for the rear handbrake.
   // Keys are on/off, so the steering eases towards full lock and back rather than jumping.
   const held = new Set();
   let steer = 0;
   let lastFrame = 0;
-  const DRIVE_KEYS = ["KeyW", "KeyS", "KeyA", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+  const DRIVE_KEYS = ["KeyW", "KeyS", "KeyA", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight"];
   function drive(now) {
     const dt = lastFrame ? Math.min((now - lastFrame) / 1000, 0.1) : 0;
     lastFrame = now;
@@ -273,10 +286,17 @@ async function main() {
     const target = (has("KeyD", "ArrowRight") ? 1 : 0) - (has("KeyA", "ArrowLeft") ? 1 : 0);
     const rate = target === 0 ? 4 : 2.5; // lock per second: back to centre faster than out to lock
     steer += Math.max(-rate * dt, Math.min(rate * dt, target - steer));
-    viewer.set_controls(has("KeyW", "ArrowUp") ? 1 : 0, has("KeyS", "ArrowDown") ? 1 : 0, steer);
+    viewer.set_controls(has("KeyW", "ArrowUp") ? 1 : 0, has("KeyS", "ArrowDown") ? 1 : 0, steer, has("ShiftLeft", "ShiftRight") ? 1 : 0);
   }
   window.addEventListener("keyup", (e) => held.delete(e.code));
-  window.addEventListener("blur", () => held.clear());
+  function releaseDrive() {
+    held.clear();
+    steer = 0;
+    viewer.set_controls(0, 0, 0, 0);
+  }
+  // Typing must release pedals immediately, including a W held while opening chat.
+  input.addEventListener("focus", releaseDrive);
+  window.addEventListener("blur", releaseDrive);
 
   function animate(now) {
     if (fitCanvas()) viewer.resize(canvas.width, canvas.height);
@@ -286,6 +306,7 @@ async function main() {
       return;
     }
     drive(now);
+    if (now - lastHud > 250) viewer.set_io_metrics(JSON.stringify(assetMetrics));
     viewer.frame(now);
     frames += 1;
     if (now - lastHud > 250) {
@@ -300,11 +321,12 @@ async function main() {
         (v ? `car ${v.state}  contacts ${v.ground_contacts}` : "no car") +
         (status.car ? `\n${status.car.speed_kmh.toFixed(0).padStart(3)} km/h  gear ${status.car.gear} (${status.car.gearbox})  ${status.car.rpm.toFixed(0).padStart(4)} rpm` +
           `  ${status.car.torque_nm} Nm  ${status.car.power_kw} kW` +
-          `${status.car.launch ? "  LAUNCH" : ""}${status.car.wheelspin ? "  WHEELSPIN" : ""}${status.car.limiter ? "  LIMITER" : ""}` : "") +
-        "\nW/S throttle·brake  A/D steer  Q/E shift  G auto/manual  T flip upright" +
+          `${status.car.launch ? "  LAUNCH" : ""}${status.car.wheelspin ? "  WHEELSPIN" : ""}${status.car.limiter ? "  LIMITER" : ""}${status.car.handbrake > 0 ? "  HANDBRAKE" : ""}` : "") +
+        "\nW/S drive·brake·reverse  Shift handbrake  A/D steer  Q/E gears  T flip" +
         "\nB LOD boxes: 0 green · 1 yellow · 2 orange · 3 red (bright: loading)" +
         "\nC colliders: floor cyan · walls magenta   H dashboard" +
-        `\ncamera ${viewer.camera_mode()}   F follow/free   R reset   P stop   L next level   Esc menu` +
+        `\ncamera ${viewer.camera_mode()}   F follow/free   R camera   Backspace reset` +
+        "\n~ console/game   P stop   L next level   Esc menu" +
         "\nleft rotate · right/shift pan\nmiddle/option height · wheel zoom";
     }
     rafId = requestAnimationFrame(animate);
@@ -328,6 +350,7 @@ async function main() {
     return e.button === 0 ? "orbit" : null;
   }
   canvas.addEventListener("pointerdown", (e) => {
+    canvas.focus({ preventScroll: true }); // Return WASD from the console to the game before preventing pointer defaults.
     const tool = toolFor(e);
     if (!tool) return;
     e.preventDefault(); // a middle press would otherwise start the browser's autoscroll
@@ -361,6 +384,8 @@ async function main() {
   const menuLevels = document.getElementById("menu-levels");
   const here = LEVEL.split("/").pop();
   let menuPaused = false;
+  const shaderMenu = setupShaderMenu(viewer, document.getElementById("menu-shaders"),
+    document.getElementById("menu-restore"), document.getElementById("menu-notice"));
   for (const level of available) {
     const button = document.createElement("button");
     button.textContent = level;
@@ -374,11 +399,12 @@ async function main() {
   document.getElementById("menu-resume").addEventListener("click", () => closeMenu());
   function openMenu() {
     if (!menu.hidden) return;
-    held.clear();
+    releaseDrive();
+    shaderMenu.sync();
     menuPaused = !JSON.parse(viewer.status()).paused;
     if (menuPaused) viewer.command("pause");
     menu.hidden = false;
-    (menuLevels.querySelector('[aria-current="true"]') || menuLevels.firstChild)?.focus();
+    document.getElementById("menu-resume").focus();
   }
   function closeMenu() {
     if (menu.hidden) return;
@@ -389,15 +415,43 @@ async function main() {
   }
 
   window.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Handle this before the text-input guard so the same key returns to driving.
+    if (e.code === "Backquote" || e.key === "`" || e.key === "~") {
+      if (!menu.hidden) return;
+      e.preventDefault();
+      if (!e.repeat) {
+        if (document.activeElement === input) canvas.focus();
+        else input.focus();
+      }
+      return;
+    }
     if (e.target === input) return;
     if (e.key === "Escape") {
       e.preventDefault();
       if (menu.hidden) openMenu(); else closeMenu();
       return;
     }
+    if (e.key === "Backspace" && menu.hidden) {
+      e.preventDefault();
+      if (!e.repeat) {
+        releaseDrive();
+        say(viewer.command("reset"));
+      }
+      return;
+    }
     if (!menu.hidden) {
-      // Inside the menu: arrows move between the buttons; Enter and Space press them (the browser does that).
-      const buttons = [...menu.querySelectorAll("button")];
+      if (e.key === "Tab") {
+        const items = [...menu.querySelectorAll("button, input:not(:disabled)")];
+        const at = items.indexOf(document.activeElement);
+        if ((e.shiftKey && at <= 0) || (!e.shiftKey && at === items.length - 1)) {
+          e.preventDefault();
+          items[e.shiftKey ? items.length - 1 : 0]?.focus();
+        }
+        return;
+      }
+      // Arrow keys step through controls; Space and Tab retain their native checkbox behaviour.
+      const buttons = [...menu.querySelectorAll("button, input:not(:disabled)")];
       const at = buttons.indexOf(document.activeElement);
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -495,3 +549,45 @@ main().catch((error) => {
   }
   console.error(error);
 });
+
+
+// A read-only pass dashboard; updates only while expanded and keeps the canvas size unchanged.
+function setupProfiler(viewer) {
+  const panel = document.getElementById("profiler");
+  const status = document.getElementById("profiler-status");
+  const body = document.getElementById("profiler-passes");
+  const number = (n) => typeof n === "number" ? n.toFixed(3) : "—";
+  function snapshot() { viewer.set_io_metrics(JSON.stringify(assetMetrics)); return JSON.parse(viewer.command("perf")).data; }
+  function refresh() {
+    if (!panel.open) return;
+    const data = snapshot();
+    const active = data.passes || [];
+    status.textContent = `${data.timing_source} · sample frame ${data.latest_sample_frame ?? "pending"} · GPU ${number(data.gpu_frame_ms?.latest)} ms · queue ${number(data.queue_latency_ms)} ms · pending ${data.pending_frames} · ${data.width}×${data.height}`;
+    body.replaceChildren();
+    const catalogue = data.shader_catalogue || [];
+    const aggregates = data.pass_aggregates || [];
+    const ordered = [...catalogue].sort((a,b) => active.filter(p=>p.id===b.id).reduce((s,p)=>s+p.gpu_ms,0) - active.filter(p=>p.id===a.id).reduce((s,p)=>s+p.gpu_ms,0));
+    for (const spec of ordered) {
+      const groups = aggregates.filter(p=>p.id===spec.id);
+      const targets = [...new Set(active.filter(p=>p.id===spec.id).map(p=>p.target))];
+      for (const target of targets.length ? targets : [null]) {
+        const events = active.filter(p=>p.id===spec.id && p.target===target);
+        const aggregate = groups.find(p=>p.target===target)?.gpu_ms;
+        const tr = document.createElement("tr");
+        const cells = [`${spec.id}${target ? " / " + target : data.timing_source !== "gpu-timestamps" ? " (timing unavailable)" : data.latest_sample_frame == null ? " (awaiting sample)" : " (absent)"}`,events.some(p=>typeof p.gpu_ms==="number") ? number(events.reduce((s,p)=>s+(p.gpu_ms ?? 0),0)) : "—",`${number(aggregate?.mean)} / ${number(aggregate?.p95)}`,(spec.shaders || []).map(s=>s.includes("/gsplat/vert/") ? "vert/"+s.split("/").pop() : s.includes("/gsplat/frag/") ? "frag/"+s.split("/").pop() : s.split("/").pop()).join("\n")];
+        for (const [i,text] of cells.entries()) { const td=document.createElement("td");td.textContent=text;if(i===3){td.className="source";td.title=(spec.shaders || []).join("\n");td.style.whiteSpace="pre-line";}tr.append(td); }
+        body.append(tr);
+      }
+    }
+    const cpu = Object.entries(data.cpu?.cpu_ms || {}).map(([k,v])=>`${k}: ${number(v.latest)} ms`).join(" · ");
+    document.getElementById("profiler-cpu").textContent = `CPU ${cpu} · physics mean ${number(data.simulation?.cpu_ms?.physics?.mean)} ms · resident splats ${data.streaming?.resident_splats ?? 0} · tire marks ${data.tire_marks?.visible ?? 0}/${data.tire_marks?.active ?? 0} · decode queue ${data.decode_queue ?? 0} · downloaded ${(assetMetrics.network_bytes/1048576).toFixed(1)} MiB · cached ${(assetMetrics.cache_bytes/1048576).toFixed(1)} MiB`;
+  }
+  panel.addEventListener("toggle",refresh);
+  setInterval(refresh,1000);
+  document.getElementById("profiler-export").addEventListener("click",()=>{
+    const levelName=LEVEL.split("/").filter(Boolean).pop() || "scene";
+    const report={captured_at:new Date().toISOString(),level:levelName,...snapshot()};
+    const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:"application/json"}));
+    const link=document.createElement("a");link.href=url;link.download=`splat-profile-${levelName}-${Date.now()}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });
+}

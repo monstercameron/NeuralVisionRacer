@@ -13,6 +13,7 @@
   #log { flex: 1; overflow: auto; padding: 6px 10px; white-space: pre-wrap; }
   #cmd { display: flex; border-top: 1px solid #2a2c33; }
   #cmd input { flex: 1; background: #0d0e11; color: #e6e8ec; border: 0; padding: 8px 10px; font: inherit; outline: none; }
+  #cmd input:focus { box-shadow: inset 0 0 0 1px #5b8def; }
   #cmd button { background: #2a2c33; color: #e6e8ec; border: 0; padding: 0 14px; font: inherit; cursor: pointer; }
   #stop { position: fixed; top: 8px; right: 8px; background: rgba(0,0,0,.55); color: #e6e8ec; border: 1px solid #3a3d46; border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; }
   #stop[aria-pressed="true"] { background: #7a2a2a; border-color: #a33; }
@@ -23,22 +24,58 @@
   #loading #loading-fill { height: 100%; width: 0; background: #5b8def; transition: width .15s linear; }
   #loading #loading-label { margin-bottom: 8px; color: #e6e8ec; }
   #loading #loading-detail { margin-top: 8px; color: #8b8f98; font-size: 12px; }
-  #menu { position: fixed; inset: 0 0 180px 0; display: flex; align-items: center; justify-content: center; background: rgba(8,9,12,.55); backdrop-filter: blur(3px); }
+  #menu { position: fixed; inset: 0 0 180px 0; display: flex; align-items: center; justify-content: center; background: rgba(8,9,12,.55); backdrop-filter: blur(3px); z-index: 10; }
   #menu[hidden] { display: none; }
-  #menu .card { min-width: 280px; max-width: calc(100vw - 32px); background: #17181c; border: 1px solid #2a2c33; border-radius: 10px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  #menu .card { width: 740px; max-width: calc(100vw - 64px); max-height: calc(100vh - 244px); overflow: auto; background: #17181c; border: 1px solid #2a2c33; border-radius: 10px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
   #menu h2 { margin: 0 0 4px; font-size: 15px; letter-spacing: .04em; }
   #menu .hint { margin: 0 0 12px; color: #8b8f98; }
   #menu .levels { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
   #menu button { text-align: left; background: #22242a; color: #e6e8ec; border: 1px solid #2f323a; border-radius: 6px; padding: 8px 10px; font: inherit; cursor: pointer; }
   #menu button:hover, #menu button:focus-visible { border-color: #5b8def; outline: none; background: #262a33; }
   #menu button[aria-current="true"]::after { content: "  · playing"; color: #8b8f98; }
+  #menu h3 { margin: 14px 0 8px; font-size: 13px; }
+  #menu .menu-layout { display: grid; grid-template-columns: 185px 1fr; gap: 20px; }
+  #menu-shaders { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  #menu-shaders > label { grid-column: 1 / -1; }
+  #menu fieldset { min-width: 0; margin: 0; padding: 8px; border: 1px solid #353945; border-radius: 6px; }
+  #menu legend { color: #a5b9dc; padding: 0 4px; font-size: 11px; }
+  #menu .shader-toggle { display: flex; align-items: center; gap: 7px; padding: 5px 2px; cursor: pointer; font-size: 12px; }
+  #menu input { accent-color: #7eabff; margin: 0; flex-shrink: 0; }
+  #menu .shader-toggle:has(input:disabled) { opacity: .45; }
+  #menu .shader-toggle:has(input:focus-visible) { outline: 1px solid #7eabff; border-radius: 3px; }
+  #menu .menu-footer { display: flex; gap: 10px; position: sticky; bottom: -16px; padding: 12px 0 0; background: #17181c; }
+  #menu #menu-notice { min-height: 1.4em; margin: 10px 0 0; font-size: 11px; color: #a5b9dc; }
+  #menu .shader-note { margin: 8px 0 0; font-size: 11px; line-height: 1.5; color: #8b8f98; }
+  @media (max-width: 680px) {
+    #menu .menu-layout { grid-template-columns: 1fr; gap: 0; }
+    #menu .levels { flex-direction: row; flex-wrap: wrap; }
+  }
+  @media (max-width: 420px) { #menu-shaders { grid-template-columns: 1fr; } }
   #menu .resume { width: 100%; text-align: center; background: #2b3a5c; border-color: #3d5488; }
+  #profiler { position: fixed; right: 8px; top: 45px; max-width: min(680px, calc(100vw - 16px)); z-index: 4; background: #14181ff2; border: 1px solid #454f61; border-radius: 6px; }
+  #profiler summary { cursor: pointer; padding: 8px 12px; }
+  #profiler-body { padding: 4px 12px 12px; max-height: 65vh; overflow: auto; }
+  #profiler p { max-width: 620px; line-height: 1.4; color: #b6c1d1; }
+  #profiler table { border-collapse: collapse; width: 100%; font-size: 11px; }
+  #profiler th, #profiler td { text-align: left; padding: 5px; border-bottom: 1px solid #303947; vertical-align: top; }
+  #profiler button { background: #263f62; color: white; padding: 7px 10px; border: 1px solid #5375a6; border-radius: 4px; cursor: pointer; }
+  #profiler .source { max-width: 280px; overflow-wrap: anywhere; color: #8fa7c9; }
 </style>
 </head>
 <body>
-<div id="stage"><canvas id="view" width="1280" height="720"></canvas></div>
+<div id="stage"><canvas id="view" width="1280" height="720" tabindex="0" aria-label="Racing game viewport"></canvas></div>
 <div id="hud">loading…</div>
 <button id="stop" aria-pressed="false" title="Stop drawing frames to free the CPU and GPU (P)">⏸ Stop rendering</button>
+<details id="profiler">
+  <summary>Render profiler</summary>
+  <div id="profiler-body">
+    <p id="profiler-status">Waiting for the engine…</p>
+    <button id="profiler-export" type="button">Download metrics JSON</button>
+    <p>GPU spans include dependency waits and can overlap; do not add them to get frame time. Combined shaders share a measurement. Absent passes did not execute in the latest sample. CPU values are separate.</p>
+    <table><thead><tr><th>Pass / target</th><th>Latest span ms</th><th>Mean / p95 ms</th><th>Shaders</th></tr></thead><tbody id="profiler-passes"></tbody></table>
+    <p id="profiler-cpu"></p>
+  </div>
+</details>
 <div id="stopped">Rendering stopped. Press P or ▶ to resume.</div>
 <div id="loading" role="status" aria-live="polite">
   <div class="title">Splat Racer</div>
@@ -49,15 +86,23 @@
 <div id="menu" hidden role="dialog" aria-modal="true" aria-labelledby="menu-title">
   <div class="card">
     <h2 id="menu-title">Paused</h2>
-    <p class="hint">Pick a level, or press Esc to resume.</p>
-    <div class="levels" id="menu-levels"></div>
-    <button class="resume" id="menu-resume">Resume</button>
+    <p class="hint">Toggle shaders live. Press Esc to resume.</p>
+    <div class="menu-layout">
+      <section><h3>Level</h3><div class="levels" id="menu-levels"></div></section>
+      <section aria-labelledby="shader-title">
+        <h3 id="shader-title">Shaders &amp; effects</h3>
+        <div id="menu-shaders"></div>
+        <p class="shader-note">Changes apply immediately and last until reload. Speed effects appear while driving. Sorting and depth follow the car/level toggles; shared shaders stay combined in the render profiler.</p>
+        <p id="menu-notice" role="status" aria-live="polite"></p>
+      </section>
+    </div>
+    <div class="menu-footer"><button id="menu-restore">Restore settings</button><button class="resume" id="menu-resume">Resume</button></div>
   </div>
 </div>
 <div id="panel">
   <div style="padding: 4px 10px"><a style="color: #8b8f98" href="https://github.com/monstercameron/NeuralVisionRacer/blob/main/THIRD_PARTY.md" target="_blank" rel="noopener">Credits &amp; source</a></div>
   <div id="log"></div>
-  <form id="cmd"><input id="line" placeholder="console: status | pause | resume | step 60 | reset | camera reset | entities | help" autocomplete="off"><button>run</button></form>
+  <form id="cmd"><input id="line" placeholder="console: perf | perf shaders | perf sample 1 | logs | status | help" autocomplete="off"><button>run</button></form>
 </div>
 <script type="module" src="./main.js"></script>
 </body>
