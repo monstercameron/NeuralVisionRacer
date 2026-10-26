@@ -15,7 +15,7 @@ export const SHADER_GROUPS = [
     ["effects.car_clarity", "Car clarity", 0.18, "Local car contrast"],
     ["effects.car_haze_cutoff", "Haze removal", 0.02, "Reject faint car splat tails"],
     ["effects.tire_marks", "Tire marks", 1, "Road tread and skid decal shader"],
-    ["effects.dust", "Surface dust", 1, "Speed and slip sensitive soft particles"],
+    ["effects.dust", "Tire smoke & dust", 1, "Floor-sampled tire smoke on streets and dust on loose ground"],
   ]],
   ["Post-processing", [
     ["effects.dof", "Depth of field", 1, "Depth-sensitive focus blur; skips the pass when off"],

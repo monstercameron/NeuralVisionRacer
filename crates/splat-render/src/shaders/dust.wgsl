@@ -1,4 +1,4 @@
-// Soft ground-material dust; all motion uses simulation time, so pause freezes it.
+// Material-aware ground dust and tire smoke; all motion uses simulation time, so pause freezes it.
 struct View {vp:mat4x4f,right:vec4f,up:vec4f,params:vec4f,viewport:vec4f}
 struct Particle {origin_birth:vec4f,velocity_life:vec4f,tint_alpha:vec4f,shape:vec4f,normal:vec4f}
 @group(0) @binding(0) var<uniform> view:View;
@@ -9,8 +9,8 @@ struct Out {@builtin(position) position:vec4f,@location(0) uv:vec2f,@location(1)
 @vertex fn vs_main(@builtin(vertex_index) v:u32,@builtin(instance_index) id:u32)->Out {
     let corners=array<vec2f,6>(vec2f(-1,-1),vec2f(1,-1),vec2f(-1,1),vec2f(-1,1),vec2f(1,-1),vec2f(1,1));
     let p=particles[id];let age=max(view.params.x-p.origin_birth.w,0.0);let t=clamp(age/p.velocity_life.w,0.0,1.0);
-    let position=p.origin_birth.xyz+p.velocity_life.xyz*((1.0-exp(-0.65*age))/0.65)+p.normal.xyz*0.03*age*age;
-    let radius=p.shape.x*(1.0+2.4*t);let uv=corners[v];
+    let position=p.origin_birth.xyz+p.velocity_life.xyz*((1.0-exp(-0.65*age))/0.65)+p.normal.xyz*mix(0.03,0.08,p.shape.z)*age*age;
+    let radius=p.shape.x*(1.0+mix(2.4,3.0,p.shape.z)*t);let uv=corners[v];
     var out:Out;out.position=view.vp*vec4f(position+(view.right.xyz*uv.x+view.up.xyz*uv.y)*radius,1);
     out.uv=uv;out.id=id;return out;
 }
@@ -24,7 +24,8 @@ fn noise(p:vec2f)->f32 {
     let r2=dot(input.uv,input.uv);if r2>1.0||t<0.0||t>=1.0 {discard;}
     let drift=input.uv*3.1+vec2f(p.shape.y*31.0,age*0.30);
     let cloud=noise(drift)*0.65+noise(drift*2.13+4.7)*0.35;
-    let density=exp(-r2*2.7)*(1.0-smoothstep(0.60,1.0,r2))*smoothstep(0.12,0.85,cloud);
+    let texture_density=mix(smoothstep(0.12,0.85,cloud),0.55+cloud*0.45,p.shape.z);
+    let density=exp(-r2*mix(2.7,2.3,p.shape.z))*(1.0-smoothstep(0.60,1.0,r2))*texture_density;
     let fade=smoothstep(0.0,0.09,age)*pow(max(1.0-t,0.0),1.25);
     let contribution=p.tint_alpha.w*view.params.y*density*fade;
     if contribution<0.001 {discard;}

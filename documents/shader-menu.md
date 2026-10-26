@@ -4,7 +4,7 @@ Press Esc in the browser to open the pause menu. Twenty-four individual switches
 
 Scene controls cover the sky, level and car, plus the car visibility cutout. Disabling the car or level skips its preparation, sort/deformation compute, depth draws and colour draws; depth buffers still clear to prevent phantom occlusion. Hiding the car also removes its shadow/cutout. GPU assets stay resident for immediate restoration. Streaming and physics continue normally.
 
-Car/road controls cover wheel animation, shadows, specular highlights, sharpening, clarity, haze removal, tire marks and dust. Post controls cover DOF, speed blur, chromatic aberration, grain and the complete colour grade. Camera/overlay controls include shake, FOV, pullback, dashboard and collision/LOD/wheel debug views. The effects master bypasses its members without losing their individual choices.
+Car/road controls cover wheel animation, shadows, specular highlights, sharpening, clarity, haze removal, tire marks and the combined Tire smoke & dust control. Post controls cover DOF, speed blur, chromatic aberration, grain and the complete colour grade. Camera/overlay controls include shake, FOV, pullback, dashboard and collision/LOD/wheel debug views. The effects master bypasses its members without losing their individual choices.
 
 These are visual feature switches. Combined shader stages such as grade and sharpening remain one measured post pass; neutral settings still require the final image copy/presentation. Sorting and depth are controlled with their parent scene to retain valid blending and occlusion. The profiler shows actual conditional execution rather than estimating separate timings for shared functions.
 
