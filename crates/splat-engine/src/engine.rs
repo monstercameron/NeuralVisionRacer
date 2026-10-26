@@ -63,6 +63,7 @@ enum Msg {
 #[derive(Debug, Clone, Copy)]
 struct TickSnapshot {
     car: Option<crate::physics::BodyPose>,
+    wheels: [crate::drive::WheelVisualState; 4],
     eye: [f32; 3],
     target: [f32; 3],
 }
@@ -75,6 +76,9 @@ pub struct Engine {
     pub log: Arc<Logger>,
     pub physics: Physics,
     pub tick: u64,
+    pub metrics: splat_render::metrics::Metrics,
+    pub profile_logging:bool,
+    profile_clock: Option<fn()->f64>,
     /// Splat space to world space: the `splat.rotate_x_degrees` rotation.
     pub model: Mat4,
     game: GameState,
@@ -140,6 +144,9 @@ impl Engine {
             config,
             log,
             tick: 0,
+            metrics:Default::default(),
+            profile_logging:true,
+            profile_clock:{#[cfg(not(target_arch="wasm32"))]{Some(splat_render::metrics::clock_ms as fn()->f64)}#[cfg(target_arch="wasm32")]{None}},
             model,
             game: GameState::default(),
             vehicle: VehicleState::Unloaded,
@@ -294,7 +301,7 @@ impl Engine {
 
     /// Simulated seconds at the moment being drawn (between ticks).
     pub fn render_seconds(&self) -> f32 {
-        (self.tick as f32 - 1.0 + self.render_alpha) / self.config.tick_hz.max(1.0)
+        (self.tick as f32 - 1.0 + if self.paused() { 1.0 } else { self.render_alpha }) / self.config.tick_hz.max(1.0)
     }
 
     /// The car's pose for drawing: between the last two ticks by the render share.
@@ -304,7 +311,7 @@ impl Engine {
         if distance(before.position, now.position) > SNAP_M {
             return Some(now);
         }
-        let a = self.render_alpha;
+        let a = if self.paused() { 1.0 } else { self.render_alpha };
         let position = [0, 1, 2].map(|i| before.position[i] + (now.position[i] - before.position[i]) * a);
         // Normalised lerp, on the same hemisphere.
         let sign = if (0..4).map(|i| before.rotation[i] * now.rotation[i]).sum::<f32>() < 0.0 { -1.0 } else { 1.0 };
@@ -314,13 +321,30 @@ impl Engine {
         Some(crate::physics::BodyPose { position, rotation })
     }
 
+    pub fn render_wheels(&self) -> [crate::drive::WheelVisualState; 4] {
+        let now = self.physics.visual_wheels();
+        let Some(before) = self.before_tick else { return now };
+        let a = if self.paused() { 1.0 } else { self.render_alpha };
+        // Reset/teleport discontinuities use the new state immediately. Interpolate unwrapped phase: a wheel
+        // can turn more than PI per tick at road speed, so shortest-arc interpolation would reverse it.
+        let reset = before.car.zip(self.physics.vehicle_pose()).is_some_and(|(p,q)| distance(p.position,q.position)>SNAP_M);
+        if reset { return now; }
+        std::array::from_fn(|i| crate::drive::WheelVisualState {
+            spin: before.wheels[i].spin + (now[i].spin-before.wheels[i].spin) * f64::from(a),
+            angular_speed: before.wheels[i].angular_speed + (now[i].angular_speed-before.wheels[i].angular_speed)*a,
+            steering: before.wheels[i].steering + (now[i].steering-before.wheels[i].steering)*a,
+            travel: before.wheels[i].travel + (now[i].travel-before.wheels[i].travel)*a,
+            grounded: now[i].grounded,
+        })
+    }
+
     /// The active camera's eye and look point for drawing: the chase camera between the last two ticks by the
     /// render share; the orbit camera (moved by input, not ticks) as it is.
     pub fn render_camera(&self) -> ([f32; 3], [f32; 3]) {
         let (eye, target) = self.camera_eye_target();
         match self.before_tick.filter(|_| self.camera_follows()) {
             Some(before) if distance(before.eye, eye) <= SNAP_M => {
-                let a = self.render_alpha;
+                let a = if self.paused() { 1.0 } else { self.render_alpha };
                 let lerp = |p: [f32; 3], q: [f32; 3]| [0, 1, 2].map(|i| p[i] + (q[i] - p[i]) * a);
                 (lerp(before.eye, eye), lerp(before.target, target))
             }
@@ -361,16 +385,26 @@ impl Engine {
     }
 
     /// Advances the simulation one tick unless the game is paused.
+    pub fn profile_json(&self)->Value {
+        let mut value=self.metrics.json();value["tire_marks"]=self.physics.tire_marks.profile_json();value["dust"]=self.physics.dust.profile_json();value["foliage"]=self.physics.foliage_profile();value["runtime"]=json!({"tick_hz":self.config.tick_hz,"substeps":self.config.physics_substeps,"bodies":self.physics.world.bodies.len(),"colliders":self.physics.world.colliders.len(),"collision_tiles":self.physics.collision_tiles(),"road_profile":self.physics.road_profile(),"paused":self.paused(),"tick":self.tick});value
+    }
+    pub fn set_profile_clock(&mut self,clock:fn()->f64){self.profile_clock=Some(clock);self.physics.tire_marks.set_clock(clock);self.physics.dust.set_clock(clock);}
     pub fn tick(&mut self) {
         if self.paused() && !self.stepping {
             return;
         }
+        let clock=self.profile_clock;let started=clock.map(|c|c());
         let (eye, target) = self.camera_eye_target();
-        self.before_tick = Some(TickSnapshot { car: self.physics.vehicle_pose(), eye, target });
+        self.before_tick = Some(TickSnapshot { car: self.physics.vehicle_pose(), wheels: self.physics.visual_wheels(), eye, target });
         // Keep the level's collision tiles around the car (cheap unless it crossed into new tiles).
         let around = self.physics.vehicle_pose().map_or(self.spawn, |p| p.position);
-        self.physics.stream_collision(around);
+        let (built,dropped)=self.physics.stream_collision(around);
+        self.metrics.count("collision_tiles_built",built as u64);self.metrics.count("collision_tiles_dropped",dropped as u64);
+        let collision_done=clock.map(|c|c());
+        self.physics.dust.set_level(&self.config.level_path);
+        self.physics.dust.strength = if self.config.effects_enabled {self.config.effects_dust.clamp(0.0,2.0)} else {0.0};
         self.physics.step();
+        let physics_done=clock.map(|c|c());
         if std::mem::take(&mut self.pending_shift_clear) {
             let mut controls = self.physics.controls();
             controls.shift = 0;
@@ -387,8 +421,10 @@ impl Engine {
         self.run_schedule();
         self.check_timers();
         self.pump();
+        if let (Some(start),Some(coll),Some(physics),Some(clock))=(started,collision_done,physics_done,clock){let done=clock();self.metrics.record("collision_tiles",coll-start);self.metrics.record("physics",physics-coll);self.metrics.record("ecs_events_camera",done-physics);self.metrics.record("tick_total",done-start);self.metrics.count("ticks",1);}
         let period = self.config.tick_hz.max(1.0) as u64;
         if self.tick % period == 0 {
+            if self.profile_logging && Level::Info>=self.log.min_level(){self.log.metrics(self.tick,"perf.simulation",self.profile_json());}
             if let Some(pose) = self.physics.vehicle_pose() {
                 self.log.log(
                     self.tick,
@@ -418,12 +454,12 @@ impl Engine {
             },
             Command::Set(path, value) => match self.config.set(&path, &value) {
                 Ok(()) => {
-                    // The log level applies at once, and the debug layer is read every frame; everything else waits
-                    // for `reload`.
+                    // Renderer-read settings and the log level apply on the next frame.
+                    // Structural settings wait for `reload`.
                     let applies = if path == "engine.log_level" {
                         self.apply_log_level();
                         "live"
-                    } else if path == "render.debug_lod_boxes" || path == "render.debug_colliders" || path == "hud.enabled" {
+                    } else if path.starts_with("effects.") || matches!(path.as_str(), "render.sky" | "render.level" | "render.car" | "render.car_cutout" | "render.debug_lod_boxes" | "render.debug_colliders" | "render.debug_wheels" | "render.frame_pacing" | "hud.enabled") {
                         "live"
                     } else {
                         "reload"
@@ -453,7 +489,7 @@ impl Engine {
                 Err(e) => (Reply::err(cmd, e), Effect::None),
             },
             Command::Drive([throttle, brake, steer]) => {
-                self.set_controls(splat_car::Controls { throttle, brake, steer, shift: 0 });
+                self.set_controls(splat_car::Controls { throttle, brake, steer, ..Default::default() });
                 (Reply::ok(cmd, self.car_json().to_string()), Effect::None)
             }
             Command::Shift(direction) => {
@@ -896,9 +932,11 @@ impl Engine {
             "assets": { CAR_ASSET: asset::stage_tag(&self.car_stage) },
             "vehicle": vehicle,
             "car": self.car_telemetry(),
+            "wheels": self.physics.visual_wheels().map(|w| json!({"spin_rad":w.spin,"angular_speed_rad_s":w.angular_speed,"steering_rad":w.steering,"travel_m":w.travel,"grounded":w.grounded})),
             "splats": self.world_centres.len(),
             "ground": self.physics.has_ground(),
             "collision_tiles": self.physics.collision_tiles(),
+            "lighting": crate::lighting::status(&self.config),
             "log_level": self.log.min_level().as_str(),
         })
     }
@@ -959,6 +997,10 @@ impl Engine {
             "torque_nm": out.engine_torque_nm.round(),
             "power_kw": out.power_kw.round(),
             "drive_force_n": out.drive_force_n.round(),
+            "axle_torque_nm": out.axle_torque_nm, "drive_ratio": out.drive_ratio,
+            "throttle": out.throttle, "brake": out.brake, "handbrake": out.handbrake,
+            "brake_front_n": out.brake_front_n, "brake_rear_n": out.brake_rear_n,
+            "handbrake_rear_n": out.handbrake_rear_n,
             "downforce_n": out.downforce_n.round(),
             "steer_deg": (out.steer_angle.to_degrees() * 10.0).round() / 10.0,
             "shifting": out.shifting,
@@ -980,7 +1022,7 @@ impl Engine {
             "engine": format!("{}: {:.0} kW ({:.0} hp) at {:.0} rpm, redline {:.0}", spec.engine_type, kw, kw * 1.341, rpm, spec.redline_rpm),
             "gearbox": format!("{} {} speeds, final drive {}", spec.gearbox_type, spec.ratios.len(), spec.final_drive),
             "mass_kg": spec.mass_kg,
-            "controls": { "throttle": controls.throttle, "brake": controls.brake, "steer": controls.steer },
+            "controls": { "throttle": controls.throttle, "brake": controls.brake, "steer": controls.steer, "handbrake": controls.handbrake },
             "telemetry": self.car_telemetry(),
         })
     }
@@ -1029,6 +1071,9 @@ pub fn car_scale(centres: &[[f32; 3]], length_m: f32) -> f32 {
 /// The car's heading at the spawn: its nose (`vehicle.forward_degrees` in its own frame) turned to face the way the
 /// level's starting camera looks; straight ahead (no turn) without one.
 fn spawn_yaw(config: &EngineConfig, level: Option<&LevelFloor>) -> f32 {
+    if config.vehicle_auto_spawn && level.is_some() {
+        if let Some((_, yaw)) = saved_level_spawn(&config.level_path) { return yaw; }
+    }
     match level.and_then(|l| l.spawn_forward) {
         // A turn by θ about +y moves a ground direction's angle atan2(x, z) by θ.
         Some([x, z]) => x.atan2(z) - config.vehicle_forward_degrees.to_radians(),
@@ -1071,11 +1116,24 @@ fn orbit_from(eye: [f32; 3], target: [f32; 3]) -> OrbitCamera {
 /// point at the road top, so the drop is short. Without a level it is `vehicle.spawn` as written.
 fn spawn_point(config: &EngineConfig, centres: &[[f32; 3]], level: Option<&LevelFloor>) -> [f32; 3] {
     let Some(level) = level.filter(|_| config.vehicle_auto_spawn) else { return config.vehicle_spawn };
+    if let Some((position, _)) = saved_level_spawn(&config.level_path) { return position; }
     let Some(road) = level.road_spawn() else { return config.vehicle_spawn };
     let lowest_car_point = centres.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
     let centroid_y = crate::voxel::centroid(centres)[1];
     let bottom_below_centroid = if lowest_car_point.is_finite() { centroid_y - lowest_car_point } else { 0.0 };
     [road[0], road[1] + bottom_below_centroid + config.vehicle_spawn_clearance_m, road[2]]
+}
+
+/// Authored per-level body-centroid poses take precedence over automatic road selection.
+/// Kept with the source so startup, manual reset and native/WASM builds share the same checkpoint.
+fn saved_level_spawn(path: &str) -> Option<([f32; 3], f32)> {
+    let profiles: serde_json::Value = serde_json::from_str(include_str!("../../../specs/level-spawns.json")).expect("saved level spawns");
+    let name = path.trim_end_matches('/').rsplit('/').next()?;
+    let entry = profiles["levels"].get(name)?;
+    let p = entry["position"].as_array().filter(|p| p.len() == 3)?;
+    let position = [p[0].as_f64()? as f32, p[1].as_f64()? as f32, p[2].as_f64()? as f32];
+    let yaw = (entry["yaw_degrees"].as_f64()? as f32).to_radians();
+    (position.iter().all(|p| p.is_finite()) && yaw.is_finite()).then_some((position, yaw))
 }
 
 /// The entities the engine always has: the car, the level floor and the camera.
@@ -1172,7 +1230,30 @@ const FLIP_LIFT_M: f32 = 0.5;
 const HELP: &[&str] = &[
     "help", "status", "get <section.key>", "set <section.key> <value>", "dump", "reload", "logs [count] [level]",
     "pause", "resume", "step [n]", "reset", "flip", "wreck", "camera [show|reset|set ex ey ez tx ty tz|orbit dx dy|pan dx dy|zoom steps]",
+    "perf | perf trace | perf shaders | perf reset | perf sample 1..600 | perf log on/off (renderer)",
     "hdri procedural|<path>", "screenshot <path.png>", "mode practice|race|menu", "entities", "entity <id>",
     "spawn marker x y z", "attach <id> spin <deg/s>|bob <amp> <hz>", "detach <id>", "despawn <id>",
     "drive <throttle> <brake> <steer>", "shift up|down", "gearbox auto|manual", "car", "quit",
 ];
+
+#[cfg(test)]
+mod saved_spawn_tests {
+    use super::*;
+
+    #[test]
+    fn saved_delft_pose_overrides_road_selection_only_for_that_level() {
+        let mut config = EngineConfig::default();
+        config.level_path = "levels/trompetstraat-delft".into();
+        let floor = LevelFloor { cells: vec![], origin: [0.0; 3], resolution: 1.0, dims: [0; 3],
+            walls: vec![], wall_boxes: None, wall_dims: [0; 2], block_m: 1.0,
+            spawn_hint: None, spawn_forward: None };
+        let expected = [-3.648744, -2.9286222, -56.761772];
+        assert_eq!(spawn_point(&config, &[], Some(&floor)), expected);
+        assert!((spawn_yaw(&config, Some(&floor)).to_degrees() + 166.3618).abs() < 0.001);
+        assert_eq!(spawn_point(&config, &[], None), config.vehicle_spawn);
+        config.vehicle_auto_spawn = false;
+        assert_eq!(spawn_point(&config, &[], Some(&floor)), config.vehicle_spawn);
+        config.level_path = "levels/saburi-alley-yazd".into();
+        assert!(saved_level_spawn(&config.level_path).is_none());
+    }
+}

@@ -18,5 +18,14 @@ Each level contains `lod-meta.json`, its chunk folders, `scene.voxel.json` and `
 `viewer-settings.json` (the spawn hint and camera). The game reads them through `engine.conf` (`[level] path`, which
 defaults to `levels/nmbu-park-03`) and the browser page's `?level=` menu.
 
+Estimated sunlight profiles and the baked-shadow evidence used to fit them live in
+[`../specs/level-lighting.json`](../specs/level-lighting.json), outside the ignored scene data. These drive the car's
+specular highlight and shadow; Basilica and Delft are marked provisional because their shadow correspondences
+are ambiguous. See the main README for live controls and limitations.
+
 **Before publishing anything derived from these scenes, check the licence:** basilica forbids commercial use and
 derivatives, Delft requires share-alike, and two have no stated licence.
+
+Imported obstacle collision now follows the occupied voxel footprint and height, with isolated-noise rejection
+and rounded edges. Steep road-to-roof floor bridges are discarded; true walls and posts remain solid. See
+[`../documents/collision-cleanup.md`](../documents/collision-cleanup.md) for the review, tuning and regression tests.

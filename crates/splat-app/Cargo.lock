@@ -2071,6 +2071,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "pollster",
+ "serde_json",
  "splat-car",
  "splat-engine",
  "splat-hud",

@@ -84,11 +84,12 @@ mod draw;
 mod fast;
 pub mod font;
 
-pub use design::{
-    Align, Anchor, Bar, Channel, Condition, DigitStyle, Digital, Gauge, GaugeKind, Gear, HudDesign, Level, LightShape,
-    Panel, Rgba, ShiftLights, Text, Zone, BUILT_IN, PORSCHE_992_GT3RS, TURBO_SPORT,
-};
 pub use design::Dial;
+pub use design::{
+    Align, Anchor, Bar, Channel, Condition, DigitStyle, Digital, Gauge, GaugeKind, Gear, HudDesign,
+    Level, LightShape, Panel, Rgba, ShiftLights, Text, Zone, BUILT_IN, PORSCHE_992_GT3RS,
+    TURBO_SPORT,
+};
 pub use draw::{place, Placement};
 
 /// One frame's values. `Default` is all zero.
@@ -127,11 +128,116 @@ pub struct Overlay {
 /// Draws `design` showing `telemetry` for a `screen_width` × `screen_height` screen. The result covers only the
 /// panel's rectangle, placed at `x, y` within the screen. Flashing shift lights show their "on" phase; use
 /// [`render_at_time`] to make them blink.
-pub fn render(design: &HudDesign, telemetry: &Telemetry, screen_width: u32, screen_height: u32) -> Overlay {
+pub fn render(
+    design: &HudDesign,
+    telemetry: &Telemetry,
+    screen_width: u32,
+    screen_height: u32,
+) -> Overlay {
     draw::render(design, telemetry, screen_width, screen_height, 0.0)
 }
 
 /// [`render`], with a clock (seconds, any origin) for the parts that blink: shift lights at the limiter.
-pub fn render_at_time(design: &HudDesign, telemetry: &Telemetry, screen_width: u32, screen_height: u32, time_s: f32) -> Overlay {
+pub fn render_at_time(
+    design: &HudDesign,
+    telemetry: &Telemetry,
+    screen_width: u32,
+    screen_height: u32,
+    time_s: f32,
+) -> Overlay {
     draw::render(design, telemetry, screen_width, screen_height, time_s)
+}
+
+/// Reuses an unchanged dashboard instead of rasterizing and uploading it again. Owns its design so changing
+/// the design constructs a fresh cache. Telemetry remains exact; no gauge update rate or precision is reduced.
+pub struct HudRenderer {
+    design: HudDesign,
+    last: Option<(Telemetry, u32, u32, Vec<bool>)>,
+}
+impl HudRenderer {
+    pub fn new(design: HudDesign) -> Self {
+        Self { design, last: None }
+    }
+    /// Call when hiding the HUD: showing it again must upload even if the telemetry did not change.
+    pub fn invalidate(&mut self) {
+        self.last = None;
+    }
+    pub fn update(
+        &mut self,
+        t: &Telemetry,
+        width: u32,
+        height: u32,
+        time_s: f32,
+    ) -> Option<Overlay> {
+        let phases: Vec<bool> = self
+            .design
+            .gauges
+            .iter()
+            .filter_map(|g| match &g.kind {
+                GaugeKind::ShiftLights(s) => {
+                    Some(s.flashing(t) && (time_s * s.flash_hz * 2.0).floor() as i64 % 2 == 0)
+                }
+                _ => None,
+            })
+            .collect();
+        let key = (*t, width, height, phases);
+        if self.last.as_ref() == Some(&key) {
+            return None;
+        }
+        self.last = Some(key);
+        Some(render_at_time(&self.design, t, width, height, time_s))
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    #[test]
+    fn cached_hud_preserves_pixels_and_invalidates_for_telemetry_resize_and_visibility() {
+        let d = HudDesign::by_name("porsche-992-gt3rs").unwrap();
+        let mut r = HudRenderer::new(d.clone());
+        let mut t = Telemetry {
+            rpm: 1000.0,
+            limiter_rpm: 9000.0,
+            redline_rpm: 8500.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            r.update(&t, 1280, 720, 0.0),
+            Some(render_at_time(&d, &t, 1280, 720, 0.0))
+        );
+        assert!(r.update(&t, 1280, 720, 10.0).is_none());
+        t.speed_kmh = 1.0;
+        assert!(r.update(&t, 1280, 720, 10.0).is_some());
+        assert!(r.update(&t, 640, 360, 10.0).is_some());
+        r.invalidate();
+        assert!(r.update(&t, 640, 360, 10.0).is_some());
+    }
+    #[test]
+    fn flashing_shift_lights_still_animate_with_unchanged_telemetry() {
+        let d = HudDesign::by_name("porsche-992-gt3rs").unwrap();
+        let mut r = HudRenderer::new(d.clone());
+        let t = Telemetry {
+            rpm: 9000.0,
+            redline_rpm: 8500.0,
+            limiter_rpm: 9000.0,
+            limiter: true,
+            ..Default::default()
+        };
+        let mut previous = r.update(&t, 640, 360, 0.0).unwrap();
+        let mut changes = 0;
+        for i in 1..20 {
+            let now = i as f32 * 0.037;
+            let expected = render_at_time(&d, &t, 640, 360, now);
+            let actual = r.update(&t, 640, 360, now);
+            if expected != previous {
+                changes += 1;
+                assert_eq!(actual, Some(expected.clone()));
+            } else if let Some(actual) = actual {
+                assert_eq!(actual, expected);
+            }
+            previous = expected;
+        }
+        assert!(changes > 0, "the fixture must actually blink");
+    }
 }

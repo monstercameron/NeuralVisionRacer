@@ -31,6 +31,14 @@ It runs as a native window (wgpu) and in the browser (WebGPU, via WebAssembly). 
   cooling.
 - **Dashboard:** `crates/splat-hud` draws a speedometer, rev counter, boost, temperatures and shift lights from a
   design file, and can be swapped per car.
+- **Car clarity:** depth-masked sharpening and local contrast, plus faint splat-tail cleanup. All three are live
+  settings; see [`documents/car-clarity.md`](documents/car-clarity.md).
+- **Level sunlight:** each local scan has a visually estimated sun in [`specs/level-lighting.json`](specs/level-lighting.json).
+  The car gets a view-dependent clearcoat highlight from smoothed Gaussian normals, and its cast shadow uses the
+  same sun. Both native and WASM select the profile for the active level, including the browser's `?level=` override.
+- **Splat wheels:** continuous wheel rotation from physics, with steering and suspension, unchanged Gaussian scales
+  and axle thickness, and updated depth sorting. The current Porsche uses
+  fitted wheel selections; see [`documents/wheel-animation.md`](documents/wheel-animation.md) for inspection and limits.
 - **Configuration without recompiling:** every tunable is in [`engine.conf`](engine.conf) and most can be changed
   while it runs.
 - **Agent console:** the engine can run headless and be driven one command per line over stdin, with JSON replies.
@@ -143,13 +151,16 @@ name) to the address. The server sends `Cache-Control: no-store`, so a reload al
 
 | Key or mouse | Action |
 | --- | --- |
-| W / ↑, S / ↓ | Throttle, brake (hold S at a standstill to reverse) |
+| W / ↑, S / ↓ | Brake opposite motion to a full stop, then drive forward / reverse |
+| Left / right Shift (hold) | Rear-wheel handbrake; release to restore grip |
 | A / ←, D / → | Steer |
 | Q, E | Paddle shift down, up |
 | G | Automatic / manual gearbox |
 | T | Flip the car upright where it is |
 | F | Chase camera / free orbit camera |
 | R | Reset the camera |
+| Backspace | Reset the car to its spawn (edits text normally in the browser console) |
+| Tilde / backtick (browser) | Switch keyboard focus between the console and driving |
 | Space | Pause and resume the simulation |
 | P | Stop drawing frames (saves power while paused) |
 | Left-drag | Rotate the orbit camera |
@@ -159,8 +170,11 @@ name) to the address. The server sends `Cache-Control: no-store`, so a reload al
 | B | Show the level's octree boxes, coloured by detail |
 | C | Show the voxel collision around the car |
 | H | Show or hide the dashboard |
-| Esc (browser) | Pause menu with a level selector |
+| Esc (browser) | Pause menu: level selector and live shader/effect toggles |
 | L (browser) | Next level |
+
+Collisions recover in place and do not automatically reset the car. Use Backspace to reset or T to right it.
+Saved per-level position and heading overrides live in `specs/level-spawns.json`; these apply on startup and reset.
 
 ## Configuration
 
@@ -169,8 +183,43 @@ Everything tunable is in [`engine.conf`](engine.conf), in sections `[engine]`, `
 Keys are commented in place. Most take effect on
 restart or `reload`; the debug views and the HUD apply live. The console command `dump` prints the active settings.
 
+Car sunlight controls are live: `set effects.car_specular 0` disables the added highlight; `1` restores it.
+`effects.car_roughness` adjusts its width (default `0.32`, modified by the level profile). Set
+`effects.level_sun false` to use the explicit world direction in `effects.sun` instead. `status.lighting` reports
+the resolved direction, source, confidence and strength. Unknown level folders use the explicit fallback.
+
+The five profiles were inspected from source-camera and overhead renders, including height slices to expose baked
+ground shadows. The catalog records the visual evidence and inspection cameras. NMBU's lamp/tree shadows and
+Madras's cone/barrier shadows give the clearest azimuth cues. Saburi uses a building-corner shadow; Basilica and
+Delft have incomplete shadow correspondences, so their provisional profiles use weaker, broader highlights.
+Elevations and colors are approximate fits. Catalog edits require rebuilding Rust/WASM because it is embedded.
+
+This is additive clearcoat over the car's captured RGB/SH, with surface normals estimated from each Gaussian's
+thinnest axis and smoothed in a small spatial neighbourhood. Round, large and faint splats are excluded. It does
+not remove the car's original baked reflections, recover material properties or test local tree/building occlusion
+of the sun. Source assets stay unchanged. The color hook preserves Gaussian opacity and depth coverage.
+
+The [shared shadow strategy](documents/car-shadows.md) fits seven occlusion ellipsoids from those reliable car
+surfaces. They project a soft shadow along the same sun and suppress occluded added highlights. Ground attenuation
+uses linear light and receiver incidence; provisional lighting profiles use weaker, softer shadows. No extra GPU
+pass or binding is added. The profiler export includes the fitted proxy and resolved shadow settings.
+
+For a repeatable shadow inspection, use the `render_level` example with `LEVEL_ROT=z`, `SLICE_Y=<ceiling>`,
+optionally `SLICE_MIN_Y=<floor>` and `SLICE_RADIUS=0.25` to suppress large reconstruction floaters. These diagnostic
+filters only affect the in-memory preview. The lighting catalog uses the default 180-degree Z rotation; the engine
+rotates the light by the same change if `level.rotate_z_degrees` is adjusted.
+
 Frame pacing (`render.frame_pacing`) chooses `auto`, `60`, `30` or `off`. In `auto`, the renderer draws each frame for
 as many display refreshes as the GPU needs, so frame times stay even.
+
+## Performance
+
+The renderer shares decoded centres, draws indexed Gaussian quads, batches radix-sort dispatches and caches
+unchanged uploads, wheel deformation and HUD overlays. Empty collision tiles are cached; disabled post effects
+use fast paths. GPU timestamp queries and a two-frame submission limit improve pacing diagnostics and latency.
+See [performance notes and the repeatable benchmark](documents/performance.md). The browser console command
+`perf` reports CPU phases, GPU timing source, queue latency, pending frames and canvas size. Open **Render profiler**
+in the browser for WGSL pass timings and JSON export; see the [profiler guide](documents/render-profiler.md).
 
 ## Tests
 

@@ -1,6 +1,7 @@
 //! The desktop window: driving and camera input, the fixed-step clock, and the console pump.
 //!
-//! Driving: W/↑ throttle, S/↓ brake (held at a standstill: reverse), A/← D/→ steer, Q/E paddles, G auto/manual,
+//! Driving: W/↑ and S/↓ brake opposite motion to rest, then drive forward/reverse; Shift holds the rear handbrake;
+//! A/← D/→ steer, Q/E paddles, G auto/manual,
 //! T rights a flipped car where it is. B shows the streamed level's octree leaves, coloured by level of detail; C the voxel collision; H the dashboard.
 
 use crate::renderer::Renderer;
@@ -140,6 +141,7 @@ impl App {
         self.engine.set_controls(splat_car::Controls {
             throttle: pedal(&[KeyCode::KeyW, KeyCode::ArrowUp]),
             brake: pedal(&[KeyCode::KeyS, KeyCode::ArrowDown]),
+            handbrake: pedal(&[KeyCode::ShiftLeft, KeyCode::ShiftRight]),
             steer: self.steer,
             // Keep a paddle request until the engine has stepped with it.
             shift: self.engine.controls().shift,
@@ -207,6 +209,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Focused(false) => self.held.clear(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => match event.logical_key {
+                Key::Named(NamedKey::Backspace) if !event.repeat => {
+                    self.held.clear();
+                    self.engine.set_controls(splat_car::Controls::default());
+                    self.engine.execute(Command::Reset);
+                }
                 Key::Named(NamedKey::Escape) => event_loop.exit(),
                 Key::Named(NamedKey::Space) => {
                     let command = if self.engine.paused() { Command::Resume } else { Command::Pause };
@@ -324,5 +331,5 @@ impl ApplicationHandler for App {
 
 /// Keys that are held to drive (pedals and steering), as opposed to pressed once.
 fn is_drive_key(code: KeyCode) -> bool {
-    matches!(code, KeyCode::KeyW | KeyCode::KeyS | KeyCode::KeyA | KeyCode::KeyD | KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight)
+    matches!(code, KeyCode::KeyW | KeyCode::KeyS | KeyCode::KeyA | KeyCode::KeyD | KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::ShiftLeft | KeyCode::ShiftRight)
 }

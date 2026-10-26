@@ -25,17 +25,26 @@ pub struct Viewer {
     /// the whole decode (the browser build has no threads).
     decoding: std::collections::VecDeque<PendingChunk>,
     /// The dashboard drawn over the frame (`hud.*`; built-in designs only in the browser).
-    hud: Option<splat_hud::HudDesign>,
+    hud: Option<splat_hud::HudRenderer>,
+    wheel_rig: Option<splat_engine::wheel_visual::WheelRig>,
     last_ms: Option<f64>,
     accumulator: f64,
     /// The last frame's CPU time per phase (`frame_timings`).
     timings: [f64; 6],
+    metrics:splat_render::metrics::Metrics,
+    last_profile_log:f64,
+    profile_logging:bool,
+    io_metrics:serde_json::Value,
     /// Which animation frames render (`should_render`, `render.frame_pacing`).
     pacer: splat_engine::pacing::FramePacer,
 }
 
 #[wasm_bindgen]
 impl Viewer {
+    /// The actual selected level (?level= can override the config). Also selects the embedded sunlight profile.
+    pub fn set_level_name(&mut self, name: String) {
+        self.engine.config.level_path = format!("levels/{name}");
+    }
     /// Builds the viewer on the canvas with id `canvas_id`.
     ///
     /// - `config_text`: the contents of `engine.conf`.
@@ -43,12 +52,15 @@ impl Viewer {
     /// - `level_json`, `level_bin`: the level's `scene.voxel.json` and `scene.voxel.bin`. Pass empty arrays for no
     ///   level, which keeps the flat ground plane.
     /// - `viewer_settings`: the level's `viewer-settings.json` (its starting camera hints the spawn), or empty.
-    pub async fn create(canvas_id: String, config_text: String, sog: Vec<u8>, level_json: Vec<u8>, level_bin: Vec<u8>, viewer_settings: Vec<u8>) -> Result<Viewer, JsValue> {
+    /// - `level_path`: the selected level folder, including any URL override of engine.conf.
+    pub async fn create(canvas_id: String, config_text: String, sog: Vec<u8>, level_json: Vec<u8>, level_bin: Vec<u8>, viewer_settings: Vec<u8>, level_path: String) -> Result<Viewer, JsValue> {
         std::panic::set_hook(Box::new(|info| web_sys::console::error_1(&format!("splat-racer panic: {info}").into())));
 
-        let config = EngineConfig::parse(&config_text).map_err(|errors| {
+        let mut config = EngineConfig::parse(&config_text).map_err(|errors| {
             JsValue::from_str(&errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))
         })?;
+        // The URL-selected level must be known before Engine::new chooses its spawn.
+        config.level_path = level_path;
         let level_name: Level = config.log_level.parse().unwrap_or(Level::Info);
         let log = Arc::new(Logger::open(None, level_name, config.log_memory_lines).map_err(js_error)?);
 
@@ -65,7 +77,8 @@ impl Viewer {
             log.log(0, Level::Info, "level", format!("floor: {} cells", floor.cells.len()));
             Some(floor)
         };
-        let engine = Engine::new(config, None, log, CarLoad::Loaded(centres), level);
+        let mut engine = Engine::new(config, None, log, CarLoad::Loaded(centres), level);
+        engine.set_profile_clock(clock_ms);
 
         let canvas = web_sys::window()
             .and_then(|w| w.document())
@@ -81,6 +94,8 @@ impl Viewer {
         let mut frame = Frame::new(&instance, Some(surface), size, true, Some(&bundle))
             .await
             .map_err(|e| JsValue::from_str(&e))?;
+        let wheel_rig = splat_engine::wheel_visual::WheelRig::fit(&engine,&bundle);
+        if let Some(rig)=&wheel_rig { frame.configure_car_wheels(&rig.parts); }
 
         let cubemap = env::to_cubemap(&env::procedural(1024, 512, engine.config.hdri_procedural_sun), engine.config.hdri_face_size.max(16), engine.config.hdri_rotation_degrees);
         let sky = frame.build_sky(&cubemap);
@@ -88,8 +103,8 @@ impl Viewer {
         frame.set_clock(clock_ms);
 
         // Loaded whether or not it is shown, so `hud.enabled` (the H key) toggles it live.
-        let hud = hud_design(&engine.config).ok();
-        Ok(Viewer { engine, frame, level_chunks: Vec::new(), stream: None, decoding: Default::default(), hud, last_ms: None, accumulator: 0.0, timings: [0.0; 6], pacer: splat_engine::pacing::FramePacer::new(splat_engine::pacing::PacingMode::Auto) })
+        let hud = hud_design(&engine.config).map(splat_hud::HudRenderer::new).ok();
+        Ok(Viewer { engine, frame, level_chunks: Vec::new(), stream: None, decoding: Default::default(), hud, wheel_rig, last_ms: None, accumulator: 0.0, timings: [0.0; 6], metrics:Default::default(),last_profile_log:0.0,profile_logging:true,io_metrics:serde_json::Value::Null, pacer: splat_engine::pacing::FramePacer::new(splat_engine::pacing::PacingMode::Auto) })
     }
 
     /// One animation frame. `now_ms` is `requestAnimationFrame`'s timestamp. Runs whole engine ticks for the elapsed
@@ -101,6 +116,7 @@ impl Viewer {
             None => 0.0,
         };
         self.last_ms = Some(now_ms);
+        let ticks_before=self.engine.tick;
         let step = 1.0 / f64::from(self.engine.config.tick_hz.max(1.0));
         self.accumulator += dt;
         while self.accumulator >= step {
@@ -111,6 +127,7 @@ impl Viewer {
         let ticked = clock_ms();
         let (width, height) = self.frame.size();
         let view = view_for(&self.engine, width, height);
+        if let Some(rig)=&self.wheel_rig { self.frame.set_car_wheel_animation(&if self.engine.config.effects_enabled && self.engine.config.effects_wheels { rig.animation(self.engine.render_wheels(),self.engine.config.render_debug_wheels) } else { Default::default() }); }
         self.frame.set_level_model(level_model(&self.engine));
         self.frame.set_cutout(car_cutout(&self.engine));
         self.frame.set_lod_focus(lod_focus(&self.engine));
@@ -124,17 +141,25 @@ impl Viewer {
         }
         self.frame.set_lod_debug(self.stream.as_ref().filter(|_| self.engine.config.render_debug_lod_boxes));
         collision_debug(&self.engine, &mut self.frame);
-        match (self.hud.as_ref().filter(|_| self.engine.config.hud_enabled), hud_telemetry(&self.engine)) {
+        match (self.hud.as_mut().filter(|_| self.engine.config.hud_enabled), hud_telemetry(&self.engine)) {
             (Some(design), Some(telemetry)) => {
-                let o = splat_hud::render_at_time(design, &telemetry, width, height, (now_ms / 1000.0) as f32);
-                self.frame.set_overlay(Some((o.x, o.y, o.width, o.height, &o.rgba)));
+                if let Some(o) = design.update(&telemetry, width, height, (now_ms / 1000.0) as f32) {
+                    self.frame.set_overlay(Some((o.x, o.y, o.width, o.height, &o.rgba)));
+                }
             }
-            _ => self.frame.set_overlay(None),
+            _ => {
+                if let Some(hud) = self.hud.as_mut() { hud.invalidate(); }
+                self.frame.set_overlay(None);
+            },
         }
         let drawn_prep = clock_ms();
         self.frame.render(&view);
         let done = clock_ms();
         self.timings = [ticked - started, decoded - ticked, streamed - decoded, drawn_prep - streamed, done - drawn_prep, done - started];
+        for (name,ms) in ["ticks","setup_decode","stream_upload","hud_debug","encode_submit","frame_cpu_total"].into_iter().zip(self.timings){self.metrics.record(name,ms);}
+        self.metrics.count("render_attempts",1);self.metrics.count("simulation_ticks",self.engine.tick-ticks_before);
+        if self.profile_logging && Level::Info>=self.engine.log.min_level() && now_ms-self.last_profile_log>=1000.0 {self.engine.log.metrics(self.engine.tick,"perf",self.profile_json());self.last_profile_log=now_ms;}
+
     }
 
     /// Frame pacing: call on every animation frame with its timestamp, and run `frame` only when this returns true,
@@ -142,7 +167,9 @@ impl Viewer {
     pub fn should_render(&mut self, now_ms: f64) -> bool {
         self.pacer.set_mode(splat_engine::pacing::PacingMode::parse(&self.engine.config.render_frame_pacing));
         self.pacer.record_gpu_ms(self.frame.gpu_ms());
-        self.pacer.tick(now_ms)
+        self.metrics.count("animation_callbacks",1);
+        if !self.pacer.tick(now_ms){self.metrics.count("pacing_skips",1);return false;}
+        if !self.frame.can_render(){self.metrics.count("backpressure_skips",1);return false;}true
     }
 
     /// The pacing state: display refresh (ms), refreshes per frame, median GPU time (ms).
@@ -166,7 +193,7 @@ impl Viewer {
     /// Switches the dashboard design: a built-in name (`porsche-992-gt3rs`, `turbo-sport`) or a `.hud` file's text.
     pub fn set_hud(&mut self, design: &str) -> Result<(), JsValue> {
         let design = splat_hud::HudDesign::by_name(design.trim()).map(Ok).unwrap_or_else(|| splat_hud::HudDesign::parse(design)).map_err(js_error)?;
-        self.hud = Some(design);
+        self.hud = Some(splat_hud::HudRenderer::new(design));
         Ok(())
     }
 
@@ -317,11 +344,12 @@ impl Viewer {
         self.engine.zoom_camera(steps);
     }
 
-    /// Driver controls: throttle and brake 0..1, steer -1 (left) .. 1 (right). They stay until changed. A pending
+    /// Direction requests W/S and optional rear handbrake 0..1, steer -1 (left) .. 1 (right).
+    /// Three-argument callers retain a released handbrake. Controls stay until changed. A pending
     /// paddle shift is kept until the engine has stepped with it.
-    pub fn set_controls(&mut self, throttle: f32, brake: f32, steer: f32) {
+    pub fn set_controls(&mut self, throttle: f32, brake: f32, steer: f32, handbrake: Option<f32>) {
         let shift = self.engine.controls().shift;
-        self.engine.set_controls(splat_car::Controls { throttle, brake, steer, shift });
+        self.engine.set_controls(splat_car::Controls { throttle, brake, steer, shift, handbrake: handbrake.unwrap_or(0.0) });
     }
 
     /// Paddle shift: +1 up, -1 down.
@@ -348,6 +376,16 @@ impl Viewer {
 
     /// Runs one console line and returns its reply as one JSON line, the same format as the desktop console.
     pub fn command(&mut self, line: &str) -> String {
+        let args:Vec<_>=line.split_whitespace().collect();
+        if args.first()==Some(&"perf") {
+            let result=match args.as_slice(){
+                ["perf"]=>Ok(self.profile_json()),
+                ["perf","log",mode] if ["on","off"].contains(mode)=>{self.profile_logging=*mode=="on";self.engine.profile_logging=self.profile_logging;Ok(serde_json::json!({"profile_logging":self.profile_logging}))},
+                ["perf","reset"]=>{self.metrics.reset();self.engine.metrics.reset();self.frame.reset_profile();Ok(serde_json::json!({"reset":true}))},
+                _=>self.frame.profile_command(line).unwrap()
+            };
+            return match result{Ok(data)=>Reply::ok("perf",data.to_string()),Err(e)=>Reply::err("perf",e)}.to_json_line();
+        }
         match console::parse(line) {
             Ok(None) => String::new(),
             Ok(Some(command)) => self.engine.execute(command).0.to_json_line(),
@@ -355,6 +393,13 @@ impl Viewer {
         }
     }
 
+    pub fn set_io_metrics(&mut self,text:&str){if let Ok(value)=serde_json::from_str(text){self.io_metrics=value;}}
+    fn profile_json(&self)->serde_json::Value {
+        let mut value=self.frame.profile_json();value["cpu"]=self.metrics.json();value["simulation"]=self.engine.profile_json();
+        value["streaming"]=self.stream.as_ref().map_or(serde_json::Value::Null,|s|s.stats().json());
+        value["assets"]=self.io_metrics.clone();value["decode_queue"]=self.decoding.len().into();value["tick"]=self.engine.tick.into();value["paused"]=self.engine.paused().into();
+        value["profile_logging"]=self.profile_logging.into();value["pacing"]=serde_json::json!({"refresh_ms":self.pacer.refresh_ms(),"refreshes_per_frame":self.pacer.span(),"gpu_ms":self.pacer.gpu_ms(),"mode":self.engine.config.render_frame_pacing});value
+    }
     /// The engine's status as JSON.
     pub fn status(&self) -> String {
         self.engine.status_json().to_string()

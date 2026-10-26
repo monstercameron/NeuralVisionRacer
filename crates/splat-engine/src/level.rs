@@ -1,7 +1,7 @@
 //! A streamed level's collision, from its voxels (`scene.voxel.json` + `scene.voxel.bin`): the walkable floor, and
 //! the walls (anything solid at car height above the road: facades, posts, planters).
 //!
-//! Both become static cuboids in the physics world. The car spawns on the road: the floor cell nearest the level
+//! The road becomes streamed heightfields; obstacles use fitted voxel boxes in per-tile compounds. The car spawns on the road: the floor cell nearest the level
 //! centre among the lowest surfaces.
 
 use crate::svo::{grid_cells, Octree};
@@ -35,6 +35,8 @@ pub struct LevelFloor {
     pub dims: [u32; 3],
     /// Wall columns over the block grid (`block_m` square), indexed `bx * nbz + bz`: the road block they stand on.
     pub walls: Vec<Option<u32>>,
+    /// Source-fitted obstacle geometry. None retains coarse columns for synthetic/legacy callers.
+    pub wall_boxes: Option<Vec<crate::svo::WallBox>>,
     /// Block grid size `[nbx, nbz]`.
     pub wall_dims: [usize; 2],
     /// Metres per block (4 cells).
@@ -82,7 +84,10 @@ impl LevelFloor {
         let block_m = resolution * 4.0;
         let blocks = |m: f32| (m / block_m).round().max(1.0) as usize;
         let (walls, wall_dims) = tree.wall_columns(clearance, (blocks(WALL_FROM_M), blocks(WALL_TO_M)), blocks(WALL_REACH_M));
+        let wall_boxes = tree.wall_boxes(&walls, wall_dims, (blocks(WALL_FROM_M), blocks(WALL_TO_M)));
+        // Keep the conservative spawn exclusion grid, while driving uses the fitted boxes.
         Ok(Self {
+            wall_boxes: Some(wall_boxes),
             spawn_hint: None,
             spawn_forward: None,
             cells: tree.floor_cells(clearance),

@@ -53,7 +53,7 @@ fn main() {
         let (keys, secs) = part.split_once(':').expect("KEYS:seconds");
         let secs: f32 = secs.parse().unwrap();
         let steer = if keys.contains('A') { -1.0 } else if keys.contains('D') { 1.0 } else { 0.0 };
-        let mut controls = Controls { throttle: f32::from(u8::from(keys.contains('W'))), brake: f32::from(u8::from(keys.contains('S'))), steer, shift: 0 };
+        let mut controls = Controls { throttle: f32::from(u8::from(keys.contains('W'))), brake: f32::from(u8::from(keys.contains('S'))), steer, shift: 0, handbrake: 0.0 };
         for _ in 0..(secs * 60.0) as usize {
             if hold {
                 // HOLD: steer to keep the starting heading (positive steer is right).

@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "reference_rotate_z_degrees": 180,
+  "coordinate_system": "Game Y-up at level.rotate_z_degrees=180; vector points towards sun, opposite ground shadow. No geographic north assumed.",
+  "method": "Delft direction fitted offline from source-ground brightness versus full-scene voxel visibility; other levels use manual visual estimates from source-camera, overhead and height-sliced renders. Elevation, radiance and color are approximate artistic fits, not recovered capture metadata.",
+  "levels": {
+    "nmbu-park-03": {
+      "sun": [
+        -0.98,
+        0.52,
+        0.18
+      ],
+      "color": [
+        1,
+        0.97,
+        0.87
+      ],
+      "intensity": 1.2,
+      "roughness": 0.34,
+      "confidence": "medium-high azimuth; approximate elevation",
+      "evidence": "Long lamp and tree shadows run mainly towards +X and slightly -Z across the path and lawn. The isolated lamp shadow in the lower overhead view is useful. Sun is opposite, towards -X/+Z; long shadows suggest a relatively low sun.",
+      "inspection_camera": {
+        "eye": [
+          35.816746,
+          28.582568,
+          -81.948061
+        ],
+        "target": [
+          35.816746,
+          -8.417433,
+          -81.958061
+        ]
+      },
+      "shadow_strength_scale": 1.0,
+      "shadow_softness": 0.1
+    },
+    "madras-square": {
+      "sun": [
+        0.3,
+        1,
+        -0.95
+      ],
+      "color": [
+        1,
+        0.99,
+        0.95
+      ],
+      "intensity": 1.2,
+      "roughness": 0.28,
+      "confidence": "medium-high azimuth; approximate elevation",
+      "evidence": "Repeated cone and freestanding barrier shadows extend towards -X/+Z. The triangular barrier and paired signs provide independent checks. Short cone shadows suggest higher sun than NMBU. This level has no driving collision yet.",
+      "inspection_camera": {
+        "eye": [
+          0,
+          37,
+          0.01
+        ],
+        "target": [
+          0,
+          0,
+          0
+        ]
+      },
+      "shadow_strength_scale": 0.95,
+      "shadow_softness": 0.1
+    },
+    "saburi-alley-yazd": {
+      "sun": [
+        0.9,
+        0.85,
+        0.08
+      ],
+      "color": [
+        1,
+        0.95,
+        0.84
+      ],
+      "intensity": 1.1,
+      "roughness": 0.3,
+      "confidence": "medium azimuth; approximate elevation",
+      "evidence": "The corner at the junction casts a broad shadow mainly towards -X across the lane; the opposite facade is illuminated in the source view. +X dominates; the small Z component is uncertain because the junction shadow is partly hidden.",
+      "inspection_camera": {
+        "eye": [
+          0.89282,
+          37.557032,
+          -7.344709
+        ],
+        "target": [
+          0.89282,
+          0.557032,
+          -7.354709
+        ]
+      },
+      "shadow_strength_scale": 0.95,
+      "shadow_softness": 0.13
+    },
+    "basilica-assumption": {
+      "sun": [
+        0.65,
+        0.28,
+        0.7
+      ],
+      "color": [
+        1,
+        0.82,
+        0.6
+      ],
+      "intensity": 0.6,
+      "roughness": 0.42,
+      "confidence": "low; broad provisional lighting",
+      "evidence": "Warm low-angle light on upper towers, lower facade and much of courtyard in shade. A bright strip at the +X/+Z side supports light from that side, but no isolated complete caster/shadow pair is visible. Azimuth and elevation remain provisional; use a weaker, wider highlight.",
+      "inspection_camera": {
+        "eye": [
+          47.836727,
+          36.112844,
+          -10.878552
+        ],
+        "target": [
+          47.836727,
+          -0.887156,
+          -10.888552
+        ]
+      },
+      "shadow_strength_scale": 0.6,
+      "shadow_softness": 0.24
+    },
+    "trompetstraat-delft": {
+      "sun": [
+        0.17631904780864716,
+        0.5299192667007446,
+        -0.8295162320137024
+      ],
+      "color": [
+        1,
+        0.92,
+        0.78
+      ],
+      "intensity": 0.8,
+      "roughness": 0.4,
+      "confidence": "medium; fitted to baked road brightness and source voxel visibility",
+      "evidence": "Fitted from 2,510 source-ground median log-luminance samples and full-scene 20 cm voxel visibility. Best candidate azimuth 168 degrees, elevation 32 degrees (game +Z azimuth reference); correlation 0.550. The old +X-dominant direction predicted the entire sampled road in shade. Updated direction points mostly -Z with a smaller +X component; ground shadows extend mostly +Z and slightly -X. Capture materials and indirect lighting limit precision.",
+      "inspection_camera": {
+        "eye": [
+          -5.262171,
+          34.982923,
+          -65.18249
+        ],
+        "target": [
+          -5.262171,
+          -2.017077,
+          -65.19249
+        ]
+      },
+      "shadow_strength_scale": 1.35,
+      "shadow_softness": 0.14,
+      "sun_fit": {
+        "azimuth_deg": 168.0,
+        "elevation_deg": 32.0,
+        "correlation": 0.5503899674549662,
+        "predicted_lit_fraction": 0.24262948207171314
+      }
+    }
+  }
+}

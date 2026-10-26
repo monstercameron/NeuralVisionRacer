@@ -1,5 +1,5 @@
 //! The car's wheels: rapier's ray-cast vehicle controller (`rapier3d::control::DynamicRayCastVehicleController`,
-//! itself ported from Bullet's `btRaycastVehicle`; Apache-2.0, © Dimforge), copied here and changed in two places
+//! itself ported from Bullet's `btRaycastVehicle`; Apache-2.0, © Dimforge), copied here and extended
 //! so the car rides the scanned roads smoothly:
 //!
 //! - Each wheel feels the road through a footprint of `FOOTPRINT_RAYS` rays spread along its rolling direction, not
@@ -154,8 +154,17 @@ pub struct Wheel {
     /// The multiplier of friction between a tire and the collider it's on top of.
     pub side_friction_stiffness: Real,
     /// The wheel’s current rotation on its axle.
-    pub rotation: Real,
+    pub rotation: f64,
+    /// Angular speed (radians/second), including independent motor slip and airborne decay.
+    pub angular_velocity: Real,
     delta_rotation: Real,
+    /// Engine torque at this wheel, before traction capping; zero for passive wheels.
+    pub drive_torque_nm: Real,
+    pub driven: bool,
+    /// Solid-disc approximation for a 25 kg wheel/tire assembly.
+    pub inertia_kgm2: Real,
+    pub motor_speed_limit: Real,
+    slip_angular_velocity: Real,
     roll_influence: Real, // TODO: make this public?
     /// The maximum force applied by the suspension.
     pub max_suspension_force: Real,
@@ -171,6 +180,8 @@ pub struct Wheel {
     pub engine_force: Real,
     /// The maximum amount of braking impulse applied to slow down the vehicle.
     pub brake: Real,
+    /// Explicit mechanical lock (rear handbrake), independent of the rolling animation estimate.
+    pub locked: bool,
 
     clipped_inv_contact_dot_suspension: Real,
     suspension_relative_velocity: Real,
@@ -180,6 +191,16 @@ pub struct Wheel {
 }
 
 impl Wheel {
+    pub fn reset_rotation(&mut self) {
+        self.rotation = 0.0;
+        self.angular_velocity = 0.0;
+        self.delta_rotation = 0.0;
+        self.slip_angular_velocity = 0.0;
+    }
+
+    /// Share of the requested combined tire impulse clipped by the friction budget. Not a slip ratio.
+    pub fn grip_loss(&self) -> Real { 1.0 - self.skid_info.clamp(0.0, 1.0) }
+
     fn new(info: WheelDesc) -> Self {
         Self {
             raycast_info: RayCastInfo::default(),
@@ -199,8 +220,15 @@ impl Wheel {
             steering: 0.0,
             engine_force: 0.0,
             rotation: 0.0,
+            angular_velocity: 0.0,
             delta_rotation: 0.0,
+            drive_torque_nm: 0.0,
+            driven: false,
+            inertia_kgm2: 0.5 * 25.0 * info.radius * info.radius,
+            motor_speed_limit: 0.0,
+            slip_angular_velocity: 0.0,
             brake: 0.0,
+            locked: false,
             roll_influence: 0.1,
             clipped_inv_contact_dot_suspension: 0.0,
             suspension_relative_velocity: 0.0,
@@ -442,34 +470,49 @@ impl DynamicRayCastVehicleController {
 
         self.update_friction(queries.bodies, queries.colliders, dt);
 
-        let chassis = queries
-            .bodies
-            .get_mut(self.chassis)
-            .unwrap();
-
+        let chassis = queries.bodies.get(self.chassis).unwrap();
         for wheel in &mut self.wheels {
-            let vel = chassis.velocity_at_point(wheel.raycast_info.hard_point_ws);
-
-            if wheel.raycast_info.is_in_contact {
-                // Use the same per-wheel forward direction as `update_friction` (rolling
-                // direction on the contact plane) instead of the chassis' forward axis:
-                // the latter yields a zero or sign-flipped rotation whenever it doesn't
-                // match the wheel's actual rolling direction.
-                let fwd = wheel
-                    .raycast_info
-                    .contact_normal_ws
-                    .cross(wheel.wheel_axle_ws)
-                    .normalize_or_zero();
-
-                let proj2 = fwd.dot(vel);
-
-                wheel.delta_rotation = (proj2 * dt) / (wheel.radius);
-                wheel.rotation += wheel.delta_rotation;
-            } else {
-                wheel.rotation += wheel.delta_rotation;
-            }
-
-            wheel.delta_rotation *= 0.99; //damping of rotation when not in contact
+            let hit = &wheel.raycast_info;
+            let normal = if hit.is_in_contact { hit.contact_normal_ws } else { Vector::Y };
+            let fwd = normal.cross(wheel.wheel_axle_ws).normalize_or_zero();
+            let ground_velocity = hit.ground_object.and_then(|h| queries.colliders.get(h))
+                .and_then(|c| c.parent()).and_then(|h| queries.bodies.get(h))
+                .map_or(Vector::ZERO, |b| b.velocity_at_point(hit.contact_point_ws));
+            let road = if hit.is_in_contact {
+                fwd.dot(chassis.velocity_at_point(hit.contact_point_ws) - ground_velocity) / wheel.radius
+            } else { 0.0 };
+            let omega = if wheel.locked {
+                wheel.slip_angular_velocity = 0.0;
+                0.0
+            } else if wheel.driven {
+                // Keep the existing no-slip rolling constraint, integrating excess rotation
+                // independently once motor torque exceeds this contact's loaded grip.
+                let previous = if hit.is_in_contact { road + wheel.slip_angular_velocity } else { wheel.angular_velocity };
+                let mut free = previous + wheel.drive_torque_nm / wheel.inertia_kgm2 * dt;
+                let brake_delta = wheel.brake * wheel.radius / wheel.inertia_kgm2;
+                free -= free.signum() * free.abs().min(brake_delta);
+                let grip_torque = if hit.is_in_contact {
+                    wheel.wheel_suspension_force.min(wheel.max_suspension_force).max(0.0)
+                        * wheel.friction_slip * wheel.radius
+                } else { 0.0 };
+                let reaction = (free - road).clamp(-grip_torque * dt / wheel.inertia_kgm2,
+                                                  grip_torque * dt / wheel.inertia_kgm2);
+                let mut omega = free - reaction;
+                // A slipping clutch/gearbox cannot drive the tire above engine speed.
+                // A fast-rolling tire can still back-drive the engine without being clipped.
+                if wheel.drive_torque_nm.abs() > 0.0 && wheel.motor_speed_limit > 0.0 {
+                    let limit = road.abs().max(wheel.motor_speed_limit);
+                    omega = omega.clamp(-limit, limit);
+                }
+                if !hit.is_in_contact && wheel.drive_torque_nm == 0.0 {
+                    omega *= (-0.5 * dt).exp();
+                }
+                wheel.slip_angular_velocity = omega - road;
+                omega
+            } else if hit.is_in_contact { road } else { wheel.angular_velocity * (-0.5 * dt).exp() };
+            wheel.angular_velocity = omega;
+            wheel.delta_rotation = omega * dt;
+            wheel.rotation += f64::from(wheel.delta_rotation);
         }
     }
 

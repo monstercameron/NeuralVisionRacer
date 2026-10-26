@@ -104,6 +104,16 @@ const WALL_STEEPNESS: f32 = 0.5;
 /// Yaw rate per radian of misalignment that turns a car touching a wall towards the wall's line, rad/s.
 const WALL_TURN_RATE: f32 = 4.0;
 
+/// Unwrapped phase and suspension displacement, ready to interpolate between simulation ticks.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WheelVisualState {
+    pub spin: f64,
+    pub angular_speed: f32,
+    pub steering: f32,
+    pub travel: f32,
+    pub grounded: bool,
+}
+
 /// Wheels, mechanics and the latest controls for the one car.
 pub struct Drivetrain {
     pub car: Car,
@@ -156,8 +166,16 @@ impl Drivetrain {
         let rotation = *body.rotation();
         let forward = rotation * self.geometry.forward;
         let up = rotation * Vector::Y;
-        let velocity = body.linvel();
-        let speed = velocity.dot(forward);
+        let mut velocity = body.linvel();
+        let mut speed = velocity.dot(forward);
+        // Stop the last few centimetres/second of tire-solver creep before changing direction.
+        // This is an actual velocity stop, not an early reverse threshold; never snap an airborne car.
+        if self.wheels_on_ground() >= 2 && velocity.x.hypot(velocity.z) < 0.08
+            && (self.car.braking_requested(self.controls, speed) || self.controls.handbrake > 0.0) {
+            velocity = Vector::new(0.0, velocity.y, 0.0);
+            if let Some(body) = world.bodies.get_mut(chassis) { body.set_linvel(velocity, true); }
+            speed = 0.0;
+        }
         let out = self.car.step(self.controls, speed, dt);
 
         let driven = |front: bool| match self.car.spec.drive {
@@ -166,14 +184,21 @@ impl Drivetrain {
             Drive::Awd => true,
         };
         let driven_count = self.front.iter().filter(|&&f| driven(f)).count().max(1) as f32;
-        let braking = out.brake_front_n + out.brake_rear_n > 0.0;
+        let braking = out.brake_front_n + out.brake_rear_n + out.handbrake_rear_n > 0.0;
         for (wheel, &front) in self.controller.wheels_mut().iter_mut().zip(&self.front) {
             // Rapier turns the wheel the other way to this crate's convention (positive = right).
             wheel.steering = if front { -out.steer_angle } else { 0.0 };
             // Rapier only applies a wheel's brake when its engine force is zero, so braking takes over the wheel.
-            wheel.engine_force = if driven(front) && !braking { out.drive_force_n / driven_count } else { 0.0 };
-            let axle_brake = if front { out.brake_front_n } else { out.brake_rear_n };
-            wheel.brake = axle_brake / 2.0 * dt;
+            let axle_brake = if front { out.brake_front_n } else { out.brake_rear_n + out.handbrake_rear_n };
+            wheel.engine_force = if driven(front) && axle_brake == 0.0 { out.drive_force_n / driven_count } else { 0.0 };
+            wheel.driven = driven(front);
+            wheel.drive_torque_nm = if wheel.driven && axle_brake == 0.0 { out.axle_torque_nm / driven_count } else { 0.0 };
+            wheel.motor_speed_limit = if out.drive_ratio.abs() > 0.001 {
+                out.rpm / out.drive_ratio.abs() * std::f32::consts::TAU / 60.0
+            } else { 0.0 };
+            wheel.locked = !front && out.handbrake >= 0.95;
+            let demand = axle_brake / 2.0 * dt;
+            wheel.brake = if wheel.locked { demand.min(wheel.wheel_suspension_force.min(wheel.max_suspension_force) * wheel.friction_slip * dt) } else { demand };
         }
 
         // Drag and rolling resistance oppose the motion; downforce presses the car down. Impulses, as forces would persist.
@@ -188,7 +213,7 @@ impl Drivetrain {
             // Driving pitches the nose up (a positive turn about the right axis) and braking pitches it down, by force ×
             // centre-of-gravity height; the anti-squat and anti-dive share is taken back here.
             let right = rotation * self.geometry.right;
-            let brake = (out.brake_front_n + out.brake_rear_n) * along;
+            let brake = (out.brake_front_n + out.brake_rear_n + out.handbrake_rear_n.min(self.car.spec.grip_mu * self.car.spec.mass_kg * 9.81 * (1.0 - self.car.spec.weight_front))) * along;
             let pitch = if braking { brake * self.suspension.anti_dive } else { -out.drive_force_n * self.suspension.anti_squat };
             body.apply_torque_impulse(right * (pitch * self.car.spec.cog_height_m * dt), moving);
         }
@@ -199,7 +224,7 @@ impl Drivetrain {
         let wall = self.wall_normal(world);
         let side_grip = if wall.is_some() { 1.0 - 0.6 * self.suspension.wall_slide } else { 1.0 };
         for wheel in self.controller.wheels_mut() {
-            wheel.side_friction_stiffness = side_grip;
+            wheel.side_friction_stiffness = side_grip * if wheel.locked { 0.30 } else { 1.0 };
         }
         if let (Some(normal), Some(body)) = (wall, world.bodies.get_mut(chassis)) {
             let ahead = Vector::new(forward.x, 0.0, forward.z).normalize_or_zero();
@@ -214,10 +239,14 @@ impl Drivetrain {
             body.set_angvel(spin, true);
         }
 
-        let filter = QueryFilter::default().exclude_rigid_body(chassis);
+        let filter = QueryFilter::default().exclude_sensors().exclude_rigid_body(chassis);
         let queries = world.broad_phase.as_query_pipeline_mut(world.narrow_phase.query_dispatcher(), &mut world.bodies, &mut world.colliders, filter);
         self.controller.update_vehicle(dt, queries);
-        out
+        let slipping = self.tire_contacts(world).iter().flatten().any(|c|
+            (c.angular_speed * c.radius - c.longitudinal_speed).abs() > 0.75
+        ) && self.controller.wheels().iter().any(|w| w.drive_torque_nm.abs() > 1.0);
+        self.car.report_wheelspin(slipping);
+        *self.car.last()
     }
 
     /// The horizontal direction out of a wall the body is touching, if any: the average normal of its contacts whose
@@ -246,6 +275,57 @@ impl Drivetrain {
     /// Per wheel (front left, front right, rear left, rear right): touching the ground, and its suspension length.
     pub fn wheel_states(&self) -> Vec<(bool, f32)> {
         self.controller.wheels().iter().map(|w| (w.raycast_info().is_in_contact, w.raycast_info().suspension_length)).collect()
+    }
+
+    pub fn reset_rotation(&mut self) {
+        for wheel in self.controller.wheels_mut() { wheel.reset_rotation(); }
+    }
+
+    pub fn visual_wheels(&self) -> [WheelVisualState; 4] {
+        std::array::from_fn(|i| {
+            let w = &self.controller.wheels()[i];
+            WheelVisualState {
+                spin: w.rotation,
+                angular_speed: w.angular_velocity,
+                steering: -w.steering,
+                // Positive travel raises the visible wheel towards its hardpoint.
+                travel: self.suspension.rest_m - self.suspension.sag_m - w.raycast_info().suspension_length,
+                grounded: w.raycast_info().is_in_contact,
+            }
+        })
+    }
+
+    /// Samples the same contact plane and tire impulses used by the solver; no extra raycasts.
+    pub fn tire_contacts(&self, world: &PhysicsWorld) -> [Option<crate::tire_marks::TireContact>; 4] {
+        let Some(body) = world.bodies.get(self.controller.chassis) else { return [None; 4] };
+        let out = self.car.last();
+        std::array::from_fn(|i| {
+            let w = &self.controller.wheels()[i];
+            let hit = w.raycast_info();
+            if !hit.is_in_contact { return None; }
+            // Moving surfaces are measured relative to their rigid body, including angular velocity.
+            let ground_velocity = hit.ground_object.and_then(|h| world.colliders.get(h))
+                .and_then(|c| c.parent()).and_then(|h| world.bodies.get(h))
+                .map_or(Vector::ZERO, |b| b.velocity_at_point(hit.contact_point_ws));
+            let relative = body.velocity_at_point(hit.contact_point_ws) - ground_velocity;
+            let normal = hit.contact_normal_ws;
+            let forward = normal.cross(w.axle()).normalize_or_zero();
+            let side = forward.cross(normal).normalize_or_zero();
+            let share = if self.front[i] { self.car.spec.weight_front } else { 1.0 - self.car.spec.weight_front } / 2.0;
+            // Use nominal tire width when parseable; explicit fallback for specs without metric size strings.
+            let size = if self.front[i] { &self.car.spec.tyre_front } else { &self.car.spec.tyre_rear };
+            let width = size.split('/').next().and_then(|s| s.trim().parse::<f32>().ok())
+                .filter(|w| (100.0..=500.0).contains(w)).unwrap_or(280.0) / 1000.0;
+            Some(crate::tire_marks::TireContact {
+                point: hit.contact_point_ws, normal, forward, radius: w.radius, width,
+                angular_speed: w.angular_velocity, longitudinal_speed: relative.dot(forward), lateral_speed: relative.dot(side),
+                locked: w.locked,
+                load: w.wheel_suspension_force.min(w.max_suspension_force) / (self.car.spec.mass_kg * 9.81 * share).max(1.0),
+                grip_loss: w.grip_loss(),
+                drive_excess: if w.engine_force.abs() > 1.0 && !out.shifting { out.traction_excess.min(1.0) } else { 0.0 },
+                rpm: out.rpm,
+            })
+        })
     }
 
     /// Wheels touching the ground.

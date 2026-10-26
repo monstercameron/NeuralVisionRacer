@@ -60,19 +60,22 @@ pub struct Record {
     pub level: Level,
     pub module: String,
     pub message: String,
+    pub data: Option<serde_json::Value>,
 }
 
 impl Record {
     /// The record as one JSON object, with the string escaped.
     pub fn to_json(&self) -> String {
-        format!(
+        let mut encoded = format!(
             "{{\"seq\":{},\"tick\":{},\"level\":\"{}\",\"module\":{},\"msg\":{}}}",
             self.seq,
             self.tick,
             self.level,
             json_string(&self.module),
             json_string(&self.message)
-        )
+        );
+        if let Some(data)=&self.data {encoded.pop();encoded.push_str(",\"data\":");encoded.push_str(&data.to_string());encoded.push('}');}
+        encoded
     }
 }
 
@@ -115,11 +118,17 @@ impl Logger {
     }
 
     pub fn log(&self, tick: u64, level: Level, module: &str, message: impl Into<String>) {
+        self.write_record(tick,level,module,message.into(),None);
+    }
+
+    /// A structured metrics record; data remains an object in JSONL, never an escaped JSON string.
+    pub fn metrics(&self,tick:u64,module:&str,data:serde_json::Value) {self.write_record(tick,Level::Info,module,"performance sample".into(),Some(data));}
+    fn write_record(&self,tick:u64,level:Level,module:&str,message:String,data:Option<serde_json::Value>) {
         let mut inner = self.inner.lock().expect("logger lock");
         if level < inner.min_level {
             return;
         }
-        let record = Record { seq: inner.next_seq, tick, level, module: module.to_string(), message: message.into() };
+        let record = Record { seq: inner.next_seq, tick, level, module: module.to_string(), message, data };
         inner.next_seq += 1;
         if let Some(file) = inner.file.as_mut() {
             // A failed write must not stop the simulation; the record is still kept in memory.
@@ -185,7 +194,19 @@ mod tests {
 
     #[test]
     fn json_lines_escape_quotes_and_newlines() {
-        let record = Record { seq: 1, tick: 2, level: Level::Error, module: "a\"b".into(), message: "x\ny".into() };
+        let record = Record { seq: 1, tick: 2, level: Level::Error, module: "a\"b".into(), message: "x\ny".into(), data:None };
         assert_eq!(record.to_json(), r#"{"seq":1,"tick":2,"level":"error","module":"a\"b","msg":"x\ny"}"#);
+    }
+}
+
+#[cfg(test)]
+mod metric_tests {
+    #[test]
+    fn metrics_are_structured_and_survive_the_log_tail() {
+        let log=super::Logger::open(None,super::Level::Info,2).unwrap();
+        log.metrics(42,"perf",serde_json::json!({"gpu_ms":3.25,"passes":[{"id":"post"}]}));
+        let record=log.tail(1,super::Level::Info).pop().unwrap();
+        let json:serde_json::Value=serde_json::from_str(&record.to_json()).unwrap();
+        assert!(json["data"].is_object());assert_eq!(json["data"]["passes"][0]["id"],"post");assert_eq!(json["tick"],42);
     }
 }

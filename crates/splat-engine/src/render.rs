@@ -16,6 +16,14 @@ pub fn speed_factor(engine: &Engine) -> f32 {
     (kmh / engine.config.effects_speed_ref_kmh.max(1.0)).clamp(0.0, 1.0)
 }
 
+/// Independent street-speed response for radial motion blur, with no blur at rest.
+pub fn peripheral_blur(config:&crate::EngineConfig,speed_kmh:f32)->f32 {
+    if !config.effects_enabled {return 0.0;}
+    let start=config.effects_blur_start_kmh.max(0.0);
+    let full=config.effects_blur_full_kmh.max(start+1.0);
+    config.effects_blur.clamp(0.0,1.0)*((speed_kmh.abs()-start)/(full-start)).clamp(0.0,1.0).powf(0.7)
+}
+
 /// The per-frame view for a `width × height` target, from the engine's camera and car pose. The chase camera drops
 /// back and widens its view with speed (de-zoom), and shakes, more the faster the car goes.
 pub fn view_for(engine: &Engine, width: u32, height: u32) -> View {
@@ -58,14 +66,22 @@ pub fn view_for(engine: &Engine, width: u32, height: u32) -> View {
 /// grade are constant) and the car's shadow. Everything off when `effects.enabled` is false.
 pub fn apply_effects(engine: &Engine, frame: &mut splat_render::frame::Frame, time_s: f32) {
     let config = &engine.config;
+    frame.set_visibility(config.render_sky, config.render_level, config.render_car);
+    let dust = &engine.physics.dust;
+    frame.set_dust(dust.revision, &dust.particles, dust.time as f32,
+        if config.effects_enabled {config.effects_dust.clamp(0.0,2.0)} else {0.0});
+    let trails = &engine.physics.tire_marks;
+    frame.set_tire_marks(trails.revision, &trails.marks, trails.time as f32,
+        if config.effects_enabled { config.effects_tire_marks.clamp(0.0, 2.0) } else { 0.0 });
     if !config.effects_enabled {
         frame.set_post(splat_render::frame::PostSettings::default());
         frame.set_shadow(None);
+        frame.set_car_light(None);
         return;
     }
     let s = speed_factor(engine);
     frame.set_post(splat_render::frame::PostSettings {
-        blur: config.effects_blur * s,
+        blur: peripheral_blur(config,engine.physics.car_output().map_or(0.0,|o|o.speed_mps*3.6)),
         blur_start: config.effects_blur_start,
         blur_length: config.effects_blur_length,
         fringe: config.effects_fringe * s,
@@ -76,20 +92,34 @@ pub fn apply_effects(engine: &Engine, frame: &mut splat_render::frame::Frame, ti
         vignette: config.effects_grade_vignette,
         shadow_tint: config.effects_grade_shadow_tint,
         highlight_tint: config.effects_grade_highlight_tint,
+        grade_exposure_ev: config.effects_grade_exposure_ev,
+        grade_temperature: config.effects_grade_temperature,
+        grade_tint: config.effects_grade_tint,
+        grade_shoulder: config.effects_grade_shoulder,
+        grade_black_lift: config.effects_grade_black_lift,
         time: time_s,
         dof: config.effects_dof.clamp(0.0, 1.0),
         dof_focus_m: config.effects_dof_focus_m,
         dof_range_m: config.effects_dof_range_m.max(0.1),
         dof_radius_px: config.effects_dof_radius_px.max(0.0),
+        car_sharpen: config.effects_car_sharpen,
+        car_clarity: config.effects_car_clarity,
+        car_haze_cutoff: config.effects_car_haze_cutoff,
     });
-    frame.set_shadow((config.effects_shadow > 0.0).then(|| (config.effects_shadow.min(1.0), normalize(config.effects_sun))));
+    let mut light = crate::lighting::for_level(config);
+    let (strength_scale,softness)=crate::lighting::shadow_profile(config);
+    frame.set_shadow((config.effects_shadow > 0.0).then_some((config.effects_shadow.min(1.0)*strength_scale, light.sun)));
+    frame.set_shadow_softness(softness);
+    light.intensity *= config.effects_car_specular.clamp(0.0, 4.0);
+    light.roughness *= config.effects_car_roughness.clamp(0.18, 0.8) / 0.32;
+    frame.set_car_light((light.intensity > 0.0).then_some(light));
 }
 
 /// The hole cut through the level so the car is always seen (`render.car_cutout*`), or `None` when off or there
 /// is no car.
 pub fn car_cutout(engine: &Engine) -> Option<splat_render::sort::Cutout> {
     let config = &engine.config;
-    if !config.render_car_cutout {
+    if !config.render_car_cutout || !config.render_car {
         return None;
     }
     let pose = engine.render_car_pose()?;
@@ -110,7 +140,7 @@ pub fn collision_debug(engine: &Engine, frame: &mut splat_render::frame::Frame) 
     let key = if engine.config.render_debug_colliders { engine.physics.collision_generation() } else { None };
     frame.set_world_debug(key, || {
         let (floor, wall) = (splat_render::frame::FLOOR_COLOUR, splat_render::frame::WALL_COLOUR);
-        engine.physics.collision_debug(2).map_or_else(Vec::new, |(_, lines)| lines.into_iter().map(|(a, b, is_wall)| (a, b, if is_wall { wall } else { floor })).collect())
+        engine.physics.collision_material_debug(2).map_or_else(Vec::new, |(_, lines)| lines.into_iter().map(|(a, b, kind)| (a, b, match kind {1=>wall,2=>[0.25,1.0,0.35,0.35],_=>floor})).collect())
     });
 }
 
@@ -137,15 +167,14 @@ pub fn hud_design(config: &crate::EngineConfig) -> Result<splat_hud::HudDesign, 
 pub fn hud_telemetry(engine: &Engine) -> Option<splat_hud::Telemetry> {
     let car = engine.physics.car()?;
     let out = car.last();
-    let controls = engine.controls();
     Some(splat_hud::Telemetry {
         speed_kmh: out.speed_mps.abs() * 3.6,
         rpm: out.rpm,
         redline_rpm: car.spec.redline_rpm,
         limiter_rpm: car.spec.limiter_rpm,
         gear: out.gear,
-        throttle: controls.throttle,
-        brake: controls.brake,
+        throttle: out.throttle,
+        brake: out.brake.max(out.handbrake),
         boost_bar: out.boost_bar,
         water_temp_c: out.water_temp_c,
         oil_temp_c: out.oil_temp_c,
@@ -211,4 +240,21 @@ fn smooth_noise(t: f32) -> f32 {
     let (i, f) = (t.floor(), t - t.floor());
     let ease = f * f * (3.0 - 2.0 * f);
     (hash(i) + (hash(i + 1.0) - hash(i)) * ease) * 2.0 - 1.0
+}
+
+#[cfg(test)] mod blur_tests {
+    use super::*;
+    #[test] fn peripheral_blur_is_visible_at_street_speeds_and_bypasses_at_rest() {
+        let mut c=crate::EngineConfig::default();
+        assert_eq!(peripheral_blur(&c,0.0),0.0);
+        assert_eq!(peripheral_blur(&c,8.0),0.0);
+        assert!(peripheral_blur(&c,30.0)>0.28);
+        assert!(peripheral_blur(&c,60.0)>peripheral_blur(&c,30.0));
+        assert_eq!(peripheral_blur(&c,-60.0),peripheral_blur(&c,60.0));
+        assert_eq!(peripheral_blur(&c,250.0),c.effects_blur);
+        // Lens shake/FOV retain their own high-speed curve.
+        c.effects_speed_ref_kmh=500.0;assert!(peripheral_blur(&c,30.0)>0.28);
+        c.effects_blur=0.0;assert_eq!(peripheral_blur(&c,60.0),0.0);
+        c.effects_blur=0.85;c.effects_enabled=false;assert_eq!(peripheral_blur(&c,60.0),0.0);
+    }
 }

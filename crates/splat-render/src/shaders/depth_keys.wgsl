@@ -96,18 +96,19 @@ fn fade_share(i: u32) -> f32 {
     return select(1.0, bitcast<f32>(f.z), i < f.y);
 }
 
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    let i = id.x;
+// Keep the global count to one atomic per workgroup rather than one per visible Gaussian.
+var<workgroup> local_visible: atomic<u32>;
+
+fn write_key(i: u32) -> bool {
     if (i >= params.count) {
-        return;
+        return false;
     }
     // An empty slot (released by a streamed level) has a NaN centre. Comparisons with NaN are all false, so the
     // tests below would let it through and its stale splat would still be drawn; the exponent bits catch it.
     if ((bitcast<u32>(centers[i * 3u]) & 0x7f800000u) == 0x7f800000u) {
         fade[i] = 0.0;
         keys[i] = 0xffffffffu;
-        return;
+        return false;
     }
     let share = fade_share(i);
     fade[i] = share;
@@ -115,15 +116,27 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let p = params.clip * vec4f(c, 1.0);
     if (p.w <= 0.0 || abs(p.x) > p.w * CULL_MARGIN || abs(p.y) > p.w * CULL_MARGIN || share <= 0.0) {
         keys[i] = 0xffffffffu;
-        return;
+        return false;
     }
     let v = (params.view_model * vec4f(c, 1.0)).xyz;
     if (in_cutout(v, c, i)) {
         keys[i] = 0xffffffffu;
-        return;
+        return false;
     }
-    atomicAdd(&visible, 1u);
     let bits = bitcast<u32>(v.z);
     // Flip the sign bit for positives, and every bit for negatives, so unsigned order equals float order.
     keys[i] = select(bits | 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
+    return true;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) lane: u32) {
+    if (lane == 0u) { atomicStore(&local_visible, 0u); }
+    workgroupBarrier();
+    let shown = write_key(id.x);
+    // All lanes issue the local atomic, including padding in the last group (adding zero).
+    // This also avoids the partial-wave atomic issue seen on Adreno.
+    atomicAdd(&local_visible, select(0u, 1u, shown));
+    workgroupBarrier();
+    if (lane == 0u) { atomicAdd(&visible, atomicLoad(&local_visible)); }
 }

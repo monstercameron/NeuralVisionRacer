@@ -1278,6 +1278,7 @@ name = "splat-web"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "serde_json",
  "splat-car",
  "splat-engine",
  "splat-hud",

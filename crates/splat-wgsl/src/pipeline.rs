@@ -4,6 +4,8 @@ use crate::binding::{bind_engine_declarations, fix_engine_constructs, fix_fragme
 use crate::declarations::{sog_streams, wgsl_input_declarations};
 use crate::preprocess::{preprocess_with, Defines, Overrides};
 
+pub const WHEEL_MATH: &str = include_str!("local/wheelMath.wgsl");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Vertex,
@@ -35,8 +37,34 @@ pub fn sog_v2_sh_overrides() -> Overrides {
     o.insert("gsplatContainerDeclarationsVS".into(), wgsl_input_declarations(&sog_streams(true, true)));
     o.insert("gsplatDeclarationsVS".into(), "#include \"gsplatContainerDeclVS\"".into());
     o.insert("gsplatReadVS".into(), "#include \"gsplatSogVS\"".into());
+    const SOG: &str = include_str!("../shaders/gsplat/vert/formats/sog.wgsl");
+    let from=SOG.find("fn getCenter() -> vec3f {").expect("SOG center getter");
+    let to=from+SOG[from..].find("\n}").expect("SOG center end")+2;
+    let mut sog=SOG.to_string();
+    sog.replace_range(from..to,"var<storage, read> splatCenters: array<f32>;\nfn getCenter() -> vec3f { let i=splat.index*3u; return vec3f(splatCenters[i],splatCenters[i+1u],splatCenters[i+2u]); }");
+    o.insert("gsplatSogVS".into(),sog);
+
     o.insert("gsplatSogSHVS".into(), sog_sh_24bit_labels());
     o.insert("gsplatModifyVS".into(), include_str!("local/carShadowVS.wgsl").into());
+    o.insert("wheelMathVS".into(), WHEEL_MATH.into());
+    const VS: &str = include_str!("../shaders/gsplat/vert/gsplat.wgsl");
+    const DIR: &str = "let dir = normalize(viewDir * modelView3x3);";
+    assert!(VS.contains(DIR), "gsplat SH direction hook changed");
+    let vs = VS.replace(DIR, "let dir = wheelShDirection(normalize(viewDir * modelView3x3));");
+    const READ_COLOR: &str = "var clr: half4 = half4(getColor());";
+    assert!(vs.contains(READ_COLOR), "gsplat color hook changed");
+    o.insert("gsplatVS".into(), vs.replace(READ_COLOR, "#ifdef PREPASS_PASS\n var clr: half4 = half4(0.0, 0.0, 0.0, textureLoad(sh0, splat.uv, 0).w);\n#else\n var clr: half4 = half4(getColor());\n#endif"));
+    // Add clearcoat after the existing gamma decode, before fog/tonemapping. This avoids encoding and then
+    // immediately decoding the same lighting contribution for every vertex.
+    const OUTPUT: &str = include_str!("../shaders/gsplat/vert/gsplatOutput.wgsl");
+    const FOG: &str = "// apply fog in linear space";
+    assert!(OUTPUT.contains(FOG), "gsplat output hook changed");
+    o.insert("gsplatOutputVS".into(), OUTPUT.replace(FOG, "color *= shadowTransmission;\n    color += carRadiance;\n    // apply fog in linear space"));
+    o.insert("gsplatModifyPS".into(), include_str!("local/carClarityPS.wgsl").into());
+    const PS: &str = include_str!("../shaders/gsplat/frag/gsplat.wgsl");
+    const ALPHA: &str = "var alpha: half = normExp(A) * gaussianColor.a;";
+    assert!(PS.contains(ALPHA), "gsplat alpha hook changed");
+    o.insert("gsplatPS".into(), PS.replace(ALPHA, "var alpha: half = half(carClarityAlpha(f32(normExp(A) * gaussianColor.a)));"));
     o
 }
 

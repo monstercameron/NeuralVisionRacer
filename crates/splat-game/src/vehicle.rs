@@ -14,7 +14,7 @@ pub enum VehicleState {
     /// At least one ground contact. `air_ticks` counts consecutive samples with none.
     Driving { air_ticks: u8 },
     Airborne,
-    /// An impact between the crash and wreck thresholds. `hold` counts samples since the impact.
+    /// A recoverable impact. `hold` counts samples since the impact; collisions never wreck or teleport the car.
     Crashed { hold: u16 },
     Wrecked,
     /// Teleported to the checkpoint; `settle` counts samples until the car has stayed slow long enough.
@@ -114,8 +114,6 @@ pub struct VehicleTuning {
     pub k_air: u8,
     /// Impact speed that enters Crashed (CRASH_MPS), in m/s.
     pub crash_mps: f32,
-    /// Impact speed that enters Wrecked (WRECK_MPS), in m/s.
-    pub wreck_mps: f32,
     /// Samples spent in Crashed before control returns (CRASH_HOLD).
     pub crash_hold: u16,
     /// Samples the car must stay slow before Respawning ends (SETTLE).
@@ -126,7 +124,7 @@ pub struct VehicleTuning {
 
 impl Default for VehicleTuning {
     fn default() -> Self {
-        Self { k_air: 6, crash_mps: 8.0, wreck_mps: 15.0, crash_hold: 30, settle: 30, settle_speed_mps: 0.5 }
+        Self { k_air: 6, crash_mps: 8.0, crash_hold: 30, settle: 30, settle_speed_mps: 0.5 }
     }
 }
 
@@ -193,10 +191,8 @@ pub fn step_vehicle(state: &VehicleState, event: VehicleEvent, tuning: &VehicleT
         (Parked, Ev::Release { on_ground: true }) => go(Driving { air_ticks: 0 }, vec![F::Freeze(false)]),
         (Parked, Ev::Release { on_ground: false }) => go(Airborne, vec![F::Freeze(false)]),
 
-        // V10–V12: impacts. Impacts take precedence over everything else in these states.
-        (Driving { .. } | Airborne | Crashed { .. }, Ev::Sample(s)) if impact_mps(&s) >= tuning.wreck_mps => {
-            go(Wrecked, vec![F::Notify(N::Wrecked)])
-        }
+        // All impacts recover in place. Wrecked is reserved for the explicit development
+        // command; physical collisions must not start the game's respawn timer.
         (Driving { .. } | Airborne, Ev::Sample(s)) if impact_mps(&s) >= tuning.crash_mps => go(Crashed { hold: 0 }, vec![]),
 
         // V13–V15: the crash hold, then control returns.
@@ -370,11 +366,20 @@ mod tests {
     }
 
     #[test]
-    fn v10_an_impact_at_the_wreck_threshold_wrecks_and_notifies_the_game() {
+    fn severe_and_repeated_impacts_recover_without_a_wreck_or_teleport() {
         let t = tuning();
-        let r = step_vehicle(&VehicleState::Driving { air_ticks: 0 }, sample(1, Some(t.wreck_mps), 0.0, true), &t);
-        assert_eq!(r.next, VehicleState::Wrecked);
-        assert_eq!(r.effects, vec![VehicleEffect::Notify(VehicleNotice::Wrecked)]);
+        for initial in [VehicleState::Driving { air_ticks: 0 }, VehicleState::Airborne] {
+            let mut state = initial;
+            // Longer than the old two-second respawn timer, even under continuous impacts.
+            for _ in 0..600 {
+                let r = step_vehicle(&state, sample(1, Some(100.0), 0.0, true), &t);
+                assert!(matches!(r.next, VehicleState::Crashed { .. } | VehicleState::Driving { .. }));
+                assert!(r.effects.is_empty(), "collision emitted {:?}", r.effects);
+                state = r.next;
+            }
+            for _ in 0..t.crash_hold { state = step_vehicle(&state, ground(), &t).next; }
+            assert_eq!(state, VehicleState::Driving { air_ticks: 0 });
+        }
     }
 
     #[test]

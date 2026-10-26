@@ -45,6 +45,11 @@ pub struct BodyPose {
 
 pub struct Physics {
     pub world: PhysicsWorld,
+    pub tire_marks: crate::tire_marks::TireTrails,
+    pub dust: crate::dust::Dust,
+    pub foliage: crate::foliage::Contact,
+    foliage_drag: f32,
+    foliage_cap: f32,
     substeps: u32,
     ground: Option<ColliderHandle>,
     vehicle: Option<VehicleBody>,
@@ -70,6 +75,19 @@ impl Physics {
         world.integration_parameters.dt = 1.0 / (config.tick_hz.max(1.0) * substeps as f32);
         Self {
             world,
+            foliage: Default::default(), foliage_drag: config.foliage_drag_per_m, foliage_cap: config.foliage_max_decel_mps2,
+            dust: {
+                #[allow(unused_mut)] let mut dust=crate::dust::Dust::default();
+                #[cfg(not(target_arch="wasm32"))] dust.set_clock(splat_render::metrics::clock_ms);
+                dust
+            },
+            tire_marks: {
+                #[allow(unused_mut)]
+                let mut marks = crate::tire_marks::TireTrails::default();
+                #[cfg(not(target_arch="wasm32"))]
+                marks.set_clock(splat_render::metrics::clock_ms);
+                marks
+            },
             substeps,
             ground: None,
             vehicle: None,
@@ -103,6 +121,9 @@ impl Physics {
     /// Uses `level`'s floor and walls as the ground, built only near the car: call `stream_collision` with the car's
     /// position (the engine does each tick).
     pub fn set_level(&mut self, level: &crate::level::LevelFloor, config: &EngineConfig) {
+        self.tire_marks.clear();
+        self.dust.clear();
+        self.foliage=Default::default();
         let size = [0, 1, 2].map(|i| level.dims[i] as f32 * level.resolution);
         self.level_bounds = Some((level.origin, [0, 1, 2].map(|i| level.origin[i] + size[i])));
         self.level = Some(crate::collision::LevelCollision::new(level, config));
@@ -121,6 +142,15 @@ impl Physics {
         Some((level.generation(), level.debug_segments(&self.world, stride)))
     }
 
+    pub fn collision_material_debug(&self,stride:usize)->Option<(u64,Vec<([f32;3],[f32;3],u8)>)> {
+        let level=self.level.as_ref()?;
+        Some((level.generation(),level.debug_material_segments(&self.world,stride)))
+    }
+    pub fn foliage_profile(&self)->serde_json::Value {
+        let mut v=self.foliage.json();
+        v["collision"]=self.level.as_ref().map_or(serde_json::Value::Null,|l|l.foliage_profile());v
+    }
+
     /// The streamed level collision's generation alone (cheap), to tell whether `collision_debug` would change.
     pub fn collision_generation(&self) -> Option<u64> {
         self.level.as_ref().map(|l| l.generation())
@@ -129,6 +159,10 @@ impl Physics {
     /// Collision tiles built now (0 without a level).
     pub fn collision_tiles(&self) -> usize {
         self.level.as_ref().map_or(0, |l| l.tiles())
+    }
+
+    pub fn road_profile(&self) -> Option<serde_json::Value> {
+        self.level.as_ref().and_then(|l|l.road_profile())
     }
 
     /// Adds the whole level's floor as static boxes, built from the floor cells (the probes use this; the game
@@ -292,6 +326,9 @@ impl Physics {
 
     /// Removes the vehicle body and its collider, if there is one.
     pub fn remove_vehicle(&mut self) {
+        self.foliage=Default::default();
+        self.tire_marks.break_tracks();
+        self.dust.clear();
         if let Some(vehicle) = self.vehicle.take() {
             self.world.remove_body_with_colliders(vehicle.body, true);
         }
@@ -355,7 +392,13 @@ impl Physics {
             if let Some(drivetrain) = self.drivetrain.as_mut() {
                 drivetrain.update(&mut self.world, dt);
             }
+            let contacts = self.drivetrain.as_ref().map_or([None; 4], |d| d.tire_contacts(&self.world));
+            self.tire_marks.step(contacts, dt);
+            self.dust.step(contacts, dt);
             self.world.step();
+            if let Some(v)=self.vehicle {
+                self.foliage.step(&mut self.world,v.body,v.collider,dt,self.foliage_drag,self.foliage_cap);
+            }
         }
     }
 
@@ -375,6 +418,14 @@ impl Physics {
     /// Per wheel: on the ground, and suspension length. Empty without a car.
     pub fn wheel_states(&self) -> Vec<(bool, f32)> {
         self.drivetrain.as_ref().map_or_else(Vec::new, |d| d.wheel_states())
+    }
+
+    pub fn visual_wheels(&self) -> [crate::drive::WheelVisualState; 4] {
+        self.drivetrain.as_ref().map_or([Default::default(); 4], |d| d.visual_wheels())
+    }
+
+    pub fn wheel_geometry(&self) -> Option<Geometry> {
+        self.drivetrain.as_ref().map(|d| d.geometry())
     }
 
     /// The current controls (all zero without a car).
@@ -398,6 +449,9 @@ impl Physics {
 
     /// Puts the vehicle back at `position` with no velocity, as the console `reset` does.
     pub fn reset_vehicle(&mut self, position: [f32; 3]) -> Result<(), String> {
+        self.foliage=Default::default();
+        self.tire_marks.break_tracks();
+        self.dust.clear();
         let vehicle = self.vehicle.ok_or("no vehicle")?;
         let body = self.world.bodies.get_mut(vehicle.body).ok_or("vehicle body missing")?;
         body.set_position(Pose::new(Vector::new(position[0], position[1], position[2]), Vector::new(0.0, self.spawn_yaw, 0.0)), true);
@@ -405,6 +459,7 @@ impl Physics {
         body.set_angvel(Vector::ZERO, true);
         if let Some(drivetrain) = self.drivetrain.as_mut() {
             drivetrain.car.reset();
+            drivetrain.reset_rotation();
         }
         Ok(())
     }
@@ -412,6 +467,8 @@ impl Physics {
     /// Rights the vehicle where it is (anti-flip): upright, facing the way it faced, `lift_m` higher, at rest. The
     /// gear and engine state stay. Returns the new position.
     pub fn right_vehicle(&mut self, lift_m: f32) -> Result<[f32; 3], String> {
+        self.tire_marks.break_tracks();
+        self.dust.clear();
         let vehicle = self.vehicle.ok_or("no vehicle")?;
         let body = self.world.bodies.get_mut(vehicle.body).ok_or("vehicle body missing")?;
         // The heading of the body's +z (the spawn yaw's reference), flattened; straight up or down keeps the spawn's.
@@ -421,6 +478,7 @@ impl Physics {
         body.set_position(Pose::new(p, Vector::new(0.0, yaw, 0.0)), true);
         body.set_linvel(Vector::ZERO, true);
         body.set_angvel(Vector::ZERO, true);
+        if let Some(drive) = self.drivetrain.as_mut() { drive.reset_rotation(); }
         Ok([p.x, p.y, p.z])
     }
 

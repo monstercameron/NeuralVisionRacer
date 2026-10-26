@@ -19,16 +19,18 @@
 use crate::spec::{CarSpec, Drive};
 
 const G: f32 = 9.81;
-/// Below this speed (m/s) the car counts as stopped for selecting reverse or first.
-const STOPPED_MPS: f32 = 0.3;
+/// Numerical rest only. The vehicle driver settles tiny braked motion to zero before selecting direction.
+const STOPPED_MPS: f32 = 0.001;
 
 /// Driver inputs for one step.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Controls {
-    /// 0..1.
+    /// Forward request (W), 0..1; brakes reverse motion before selecting forward at rest.
     pub throttle: f32,
-    /// 0..1.
+    /// Reverse request (S), 0..1; brakes forward motion before selecting reverse at rest.
     pub brake: f32,
+    /// Rear-wheel handbrake, independent of travel direction, 0..1.
+    pub handbrake: f32,
     /// -1 (left) .. 1 (right).
     pub steer: f32,
     /// +1 to shift up, -1 to shift down, 0 to leave it (paddles).
@@ -40,9 +42,18 @@ pub struct Controls {
 pub struct Output {
     /// Total force at the driven wheels' contact patches. Negative drives backwards (reverse) or is engine braking.
     pub drive_force_n: f32,
+    /// Signed axle torque before the road traction cap, for independent wheel rotation.
+    pub axle_torque_nm: f32,
+    /// Signed gear × final-drive ratio used for this step (before an automatic shift).
+    pub drive_ratio: f32,
     /// Brake force at each axle, opposing the motion (positive).
     pub brake_front_n: f32,
     pub brake_rear_n: f32,
+    pub handbrake_rear_n: f32,
+    /// Resolved pedals after direction gating, for HUD/telemetry rather than raw W/S requests.
+    pub throttle: f32,
+    pub brake: f32,
+    pub handbrake: f32,
     /// Aerodynamic drag, opposing the motion (positive).
     pub drag_n: f32,
     /// Rolling resistance, opposing the motion (positive).
@@ -60,6 +71,9 @@ pub struct Output {
     pub shifting: bool,
     pub limiter: bool,
     pub wheelspin: bool,
+    /// Requested drive beyond the axle's traction limit, before capping (0 means within grip).
+    /// A torque-demand proxy, not measured tire slip.
+    pub traction_excess: f32,
     pub launch: bool,
     /// Coolant and oil temperature (°C), oil pressure (bar) and boost (bar of gauge pressure; 0 without a turbo).
     pub water_temp_c: f32,
@@ -97,6 +111,9 @@ impl Car {
         &self.last
     }
 
+    /// The vehicle controller can replace the aggregate traction-demand flag with measured wheel slip.
+    pub fn report_wheelspin(&mut self, slipping: bool) { self.last.wheelspin = slipping; }
+
     /// Back to first gear at idle, as after a respawn.
     pub fn reset(&mut self) {
         self.rpm = self.spec.idle_rpm;
@@ -105,6 +122,21 @@ impl Car {
         self.boost = 0.0;
         self.last = Output::default();
     }
+
+    fn pedals(&self, controls: Controls, speed: f32) -> (f32, f32) {
+        let w = controls.throttle.clamp(0.0, 1.0);
+        let s = controls.brake.clamp(0.0, 1.0);
+        // Both direction keys mean brake; they never select a direction or feed engine torque.
+        if w > 0.05 && s > 0.05 { return (0.0, w.max(s)); }
+        if w > 0.05 {
+            if speed < -STOPPED_MPS || self.gear < 0 { (0.0, w) } else { (w, 0.0) }
+        } else if s > 0.05 {
+            if speed > STOPPED_MPS || self.gear >= 0 { (0.0, s) } else { (s, 0.0) }
+        } else { (0.0, 0.0) }
+    }
+
+    /// Whether the direction keys are currently asking to stop, before direction selection.
+    pub fn braking_requested(&self, controls: Controls, speed: f32) -> bool { self.pedals(controls, speed).1 > 0.0 }
 
     /// Advances by `dt` seconds. `speed_mps` is the car's forward speed (negative when rolling backwards).
     pub fn step(&mut self, controls: Controls, speed_mps: f32, dt: f32) -> Output {
@@ -119,8 +151,8 @@ impl Car {
         } else if stopped && self.gear < 0 && throttle_in > 0.1 && brake_in < 0.05 {
             self.begin_shift(1);
         }
-        // In reverse the pedals swap: the brake drives, the throttle brakes.
-        let (throttle, brake) = if self.gear < 0 { (brake_in, throttle_in) } else { (throttle_in, brake_in) };
+        let (throttle, brake) = self.pedals(controls, speed_mps);
+        let handbrake = if controls.handbrake.is_finite() { controls.handbrake.clamp(0.0, 1.0) } else { 0.0 };
 
         // A request held across several steps shifts once: requests during a shift are ignored.
         if controls.shift != 0 && self.shift_left <= 0.0 {
@@ -176,8 +208,11 @@ impl Car {
             let direction = if self.gear < 0 { -1.0 } else { 1.0 };
             drive = engine_torque * ratio * spec.final_drive * spec.efficiency / spec.driven_radius_m() * direction;
         }
+        let axle_torque_nm = drive * spec.driven_radius_m();
+        let drive_ratio = ratio * spec.final_drive * if self.gear < 0 { -1.0 } else { 1.0 };
         let traction = self.traction_limit(downforce);
         let wheelspin = drive.abs() > traction;
+        let traction_excess = (drive.abs() / traction.max(1.0) - 1.0).max(0.0);
         drive = drive.clamp(-traction, traction);
 
         // The engine's rotating mass, seen at the wheels, resists changes of speed: scale the net force by m / (m + m_rot).
@@ -188,6 +223,8 @@ impl Car {
         // Brakes, capped by the grip of all four tyres.
         let brake_total = (brake * spec.max_decel_g * spec.mass_kg * G).min(spec.grip_mu * (spec.mass_kg * G + downforce));
         let (brake_front, brake_rear) = (brake_total * spec.front_brake_bias, brake_total * (1.0 - spec.front_brake_bias));
+        // Mechanical rear brake demand; the vehicle solver caps a locked tire at its actual loaded grip.
+        let handbrake_rear = handbrake * spec.max_decel_g * spec.mass_kg * G;
 
         if self.auto && self.gear > 0 && !shifting {
             self.auto_shift(throttle, speed_mps);
@@ -211,8 +248,11 @@ impl Car {
         self.boost += (boost_target - self.boost) * (1.0 - (-dt / spec.boost_lag_s).exp());
         self.last = Output {
             drive_force_n: drive,
+            axle_torque_nm, drive_ratio,
             brake_front_n: brake_front,
             brake_rear_n: brake_rear,
+            handbrake_rear_n: handbrake_rear,
+            throttle, brake, handbrake,
             drag_n: drag,
             rolling_n: rolling,
             downforce_n: downforce,
@@ -225,6 +265,7 @@ impl Car {
             shifting,
             limiter,
             wheelspin,
+            traction_excess,
             launch,
             water_temp_c: self.water_c,
             oil_temp_c: self.oil_c,
@@ -314,6 +355,39 @@ pub fn straight_line(spec: &CarSpec, seconds: f32, dt: f32) -> Vec<(f32, f32, Ou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direction_keys_brake_to_rest_before_reversing_and_both_keys_only_brake() {
+        let mut car=Car::new(CarSpec::porsche_992_gt3_rs());
+        let s=Controls{brake:1.0,..Default::default()};
+        for speed in [15.0,0.2,0.002] {
+            let out=car.step(s,speed,1.0/60.0);
+            assert!(out.gear>0 && out.brake>0.9 && out.throttle==0.0,"cannot reverse while rolling: {out:?}");
+        }
+        let out=car.step(s,0.0,1.0/60.0);assert_eq!(out.gear,-1);
+        for _ in 0..10 {car.step(s,0.0,1.0/60.0);}
+        assert!(car.last().drive_force_n<0.0 && car.last().throttle>0.9 && car.last().brake==0.0);
+        let w=Controls{throttle:1.0,..Default::default()};
+        for speed in [-15.0,-0.2,-0.002] {
+            let out=car.step(w,speed,1.0/60.0);
+            assert!(out.gear<0 && out.brake>0.9 && out.throttle==0.0,"cannot drive forward before stopping: {out:?}");
+        }
+        assert_eq!(car.step(w,0.0,1.0/60.0).gear,1);
+        let both=car.step(Controls{throttle:1.0,brake:1.0,..Default::default()},0.0,1.0/60.0);
+        assert_eq!(both.gear,1);assert_eq!(both.throttle,0.0);assert_eq!(both.brake,1.0);
+        // Gear alone cannot turn W into reverse gas when the car is rolling backwards downhill.
+        let rollback=car.step(w,-2.0,1.0/60.0);assert_eq!(rollback.throttle,0.0);assert_eq!(rollback.brake,1.0);
+    }
+
+    #[test]
+    fn handbrake_is_independent_of_service_brakes_and_direction() {
+        let mut car=Car::new(CarSpec::porsche_992_gt3_rs());
+        let held=car.step(Controls{handbrake:1.0,..Default::default()},12.0,1.0/60.0);
+        assert!(held.handbrake_rear_n>0.0);assert_eq!(held.brake_front_n,0.0);assert_eq!(held.brake_rear_n,0.0);
+        assert_eq!(held.brake,0.0);assert_eq!(held.handbrake,1.0);assert!(held.gear>0);
+        let released=car.step(Controls::default(),12.0,1.0/60.0);
+        assert_eq!(released.handbrake_rear_n,0.0);assert_eq!(released.handbrake,0.0);
+    }
 
     fn run() -> Vec<(f32, f32, Output)> {
         straight_line(&CarSpec::porsche_992_gt3_rs(), 120.0, 1.0 / 120.0)

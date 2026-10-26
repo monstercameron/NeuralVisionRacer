@@ -1,0 +1,13 @@
+{
+  "levels": {
+    "trompetstraat-delft": {
+      "hard_regions": [
+        {
+          "min": [-3.0, -1.75, 29.25],
+          "max": [-1.75, 1.5, 31.75],
+          "reason": "Reviewed green painted garage door. Noisy source splats give the paint false volumetric colour evidence; keep the entire door rigid."
+        }
+      ]
+    }
+  }
+}

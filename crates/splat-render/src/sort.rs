@@ -65,6 +65,7 @@ struct Pass {
 
 /// Sorts splat indices by view depth on the GPU.
 pub struct DepthSorter {
+    metrics:std::cell::RefCell<crate::metrics::Metrics>,
     count: u32,
     /// Splats sorted: the first `active` of `count` (a streaming pool sorts only up to its highest used slot).
     active: Cell<u32>,
@@ -92,9 +93,14 @@ pub struct DepthSorter {
     values: [wgpu::Buffer; 2],
     /// The `view_model` and `clip` the indices in `values[0]` were sorted for, bit for bit; `None` before the first sort.
     sorted_for: std::cell::RefCell<Vec<u8>>,
+    last_output: std::cell::RefCell<Option<wgpu::Buffer>>,
 }
 
 impl DepthSorter {
+    /// Moving Gaussian centres invalidate the cached order even with an unchanged camera/model.
+    pub fn invalidate(&self) {
+        self.sorted_for.borrow_mut().clear();
+    }
     /// Builds every pipeline and bind group for `count` splats whose centres are in `centers`
     /// (`vec3f` per splat, tightly packed as `array<f32>`).
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, count: u32, centers: &wgpu::Buffer, fade: &wgpu::Buffer) -> Self {
@@ -131,12 +137,12 @@ impl DepthSorter {
         let fades = storage("splat fades", u64::from(MAX_FADES) * 16);
         let draw_args = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("splat draw args"),
-            size: 16,
+            size: 20,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         // Until the first sort, draw everything.
-        queue.write_buffer(&draw_args, 0, &u32s(&[crate::scene::INSTANCE_SIZE * 6, count.div_ceil(crate::scene::INSTANCE_SIZE), 0, 0]));
+        queue.write_buffer(&draw_args, 0, &u32s(&[crate::scene::INSTANCE_SIZE * 6, count.div_ceil(crate::scene::INSTANCE_SIZE), 0, 0, 0]));
         let args_uniform = uniform("draw args uniform", 16);
         queue.write_buffer(&args_uniform, 0, &u32s(&[crate::scene::INSTANCE_SIZE * 6, crate::scene::INSTANCE_SIZE, 0, 0]));
         let args_layout = layout(device, "draw args", &[uniform_entry(0), storage_entry(1, true), storage_entry(2, false)]);
@@ -258,6 +264,7 @@ impl DepthSorter {
         drop(items);
 
         Self {
+            metrics:Default::default(),
             count,
             active: Cell::new(count),
             radix_uniform,
@@ -279,6 +286,7 @@ impl DepthSorter {
             scan_levels,
             values,
             sorted_for: Default::default(),
+            last_output: Default::default(),
         }
     }
 
@@ -326,6 +334,9 @@ impl DepthSorter {
     /// `clip` (`projection * view * model`) culls splats whose centre is behind the camera or well outside the view:
     /// they sort last, and `draw_args` covers only the others. `None` keeps every splat.
     ///
+    pub fn active_slots(&self)->u32 {self.active.get()}
+    pub fn reset_profile(&self){self.metrics.borrow_mut().reset();}
+    pub fn profile_json(&self)->serde_json::Value { self.metrics.borrow().json() }
     /// `cutout`, with the camera's `view` and the scene's `model`, cuts the splats hiding the car (see `Cutout`).
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
@@ -337,6 +348,13 @@ impl DepthSorter {
         cutout: Option<(&Cutout, &Mat4, &Mat4)>,
         output: &wgpu::Buffer,
     ) {
+        self.encode_timed(queue,encoder,view_model,clip,cutout,output,None,"scene");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_timed(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder,
+        view_model: &Mat4, clip: Option<&Mat4>, cutout: Option<(&Cutout,&Mat4,&Mat4)>, output: &wgpu::Buffer,
+        timer: Option<&crate::timing::GpuTimer>, target: &'static str) {
         // A matrix whose clip-space w is always 1 and x, y always 0: nothing is culled.
         const NO_CULL: Mat4 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
         let clip = clip.unwrap_or(&NO_CULL);
@@ -358,9 +376,14 @@ impl DepthSorter {
         uniform.extend_from_slice(&self.fade_count.get().to_le_bytes());
         // Nothing changed since the last sort (a still camera and car): the order is still right.
         if *self.sorted_for.borrow() == uniform {
-            encoder.copy_buffer_to_buffer(&self.values[0], 0, output, 0, bytes);
+            self.metrics.borrow_mut().count("cache_hits",1);
+            if self.last_output.borrow().as_ref() != Some(output) {
+                encoder.copy_buffer_to_buffer(&self.values[0], 0, output, 0, bytes);
+                *self.last_output.borrow_mut() = Some(output.clone());
+            }
             return;
         }
+        self.metrics.borrow_mut().count("sorts",1);
         queue.write_buffer(&self.depth_uniform, 0, &uniform);
         *self.sorted_for.borrow_mut() = uniform;
 
@@ -368,33 +391,36 @@ impl DepthSorter {
         // Block sums past the active workgroups would hold a previous sort's counts; the scan reads all of them.
         encoder.clear_buffer(&self.block_sums, 0, None);
         let workgroups = active.div_ceil(ELEMENTS_PER_WORKGROUP).max(1);
-        dispatch(encoder, "depth keys", &self.depth_pipeline, &self.depth, active.div_ceil(THREADS_PER_WORKGROUP).max(1));
-        dispatch(encoder, "draw args", &self.args_pipeline, &self.args, 1);
+        // Dispatches are ordered inside one compute pass. WebGPU resolves the storage read/write hazards at
+        // each dispatch; ending a pass for every histogram/scan/reorder made dozens of Metal encoders per frame.
+        let mut compute = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("splat sort"), timestamp_writes: timer.and_then(|t|t.compute("splat_sort",target,2+u64::from(PASS_COUNT)*(2+self.scan_levels.len() as u64+self.scan_levels.iter().filter(|l|l.add.is_some()).count() as u64),u64::from(active.div_ceil(THREADS_PER_WORKGROUP).max(1))+1+u64::from(PASS_COUNT)*(2*u64::from(workgroups)+self.scan_levels.iter().map(|l|u64::from(l.workgroups)*(1+u64::from(l.add.is_some()))).sum::<u64>()),u64::from(active))) });
+        dispatch(&mut compute, &self.depth_pipeline, &self.depth, active.div_ceil(THREADS_PER_WORKGROUP).max(1));
+        dispatch(&mut compute, &self.args_pipeline, &self.args, 1);
         for pass in 0..PASS_COUNT as usize {
             let bind_pass = &self.passes[pass];
-            dispatch(encoder, "radix histogram", &self.histogram_pipelines[pass], &bind_pass.histogram, workgroups);
+            dispatch(&mut compute, &self.histogram_pipelines[pass], &bind_pass.histogram, workgroups);
             for level in &self.scan_levels {
-                dispatch(encoder, "prefix scan", &self.scan_pipeline, &level.scan, level.workgroups);
+                dispatch(&mut compute, &self.scan_pipeline, &level.scan, level.workgroups);
             }
             for level in self.scan_levels.iter().rev() {
                 if let Some(add) = &level.add {
-                    dispatch(encoder, "prefix add", &self.add_pipeline, add, level.workgroups);
+                    dispatch(&mut compute, &self.add_pipeline, add, level.workgroups);
                 }
             }
-            dispatch(encoder, "radix reorder", &self.reorder_pipelines[pass], &bind_pass.reorder, workgroups);
+            dispatch(&mut compute, &self.reorder_pipelines[pass], &bind_pass.reorder, workgroups);
         }
+        drop(compute);
         encoder.copy_buffer_to_buffer(&self.values[0], 0, output, 0, bytes);
+        *self.last_output.borrow_mut() = Some(output.clone());
     }
 }
 
 fn dispatch(
-    encoder: &mut wgpu::CommandEncoder,
-    label: &str,
+    pass: &mut wgpu::ComputePass<'_>,
     pipeline: &wgpu::ComputePipeline,
     bind_group: &wgpu::BindGroup,
     workgroups: u32,
 ) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(label), timestamp_writes: None });
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bind_group, &[]);
     pass.dispatch_workgroups(workgroups, 1, 1);

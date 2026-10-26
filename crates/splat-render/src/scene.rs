@@ -75,28 +75,47 @@ pub struct GsplatScene {
     /// Uniform and storage buffers, keyed by the binding name from the tables.
     buffers: BTreeMap<String, wgpu::Buffer>,
     quad: wgpu::Buffer,
+    quad_indices: wgpu::Buffer,
     count: u32,
     sorter: DepthSorter,
     /// Mean splat centre in splat space, for ordering several scenes back to front.
     pub centre: [f32; 3],
     /// Splat-space bounds of the splats between the 0.5th and 99.5th percentiles per axis, for screen-space culling.
     pub bounds: ([f32; 3], [f32; 3]),
+    pub shadow_proxy:Option<crate::shadow::Proxy>,
     /// The splat textures by stream name, kept so a pool can be written in place.
     textures: BTreeMap<String, wgpu::Texture>,
     centers: wgpu::Buffer,
     splat_width: u32,
+    wheels: Option<crate::wheel::GpuWheels>,
+    wheel_bytes: Vec<u8>,
+    wheels_dirty: std::cell::Cell<bool>,
+    uniform_cache: std::cell::RefCell<BTreeMap<String, Vec<u8>>>,
+    io_metrics:std::cell::RefCell<crate::metrics::Metrics>,
+    light_bytes: std::cell::RefCell<Vec<u8>>,
+    haze_cutoff: std::cell::Cell<f32>,
 }
 
 /// Uploads the bundle's textures, codebook and centres for `pipelines`. In the depth pass, fragments with alpha
 /// below `depth_alpha_clip` are discarded, so it sets how solid a splat must be to hide what is behind it.
 pub fn build(device: &wgpu::Device, queue: &wgpu::Queue, pipelines: &Pipelines, bundle: &Bundle, depth_alpha_clip: f32) -> Result<GsplatScene> {
+    build_inner(device, queue, pipelines, bundle, depth_alpha_clip, None)
+}
+
+/// A car scene with smoothed Gaussian surface normals for view-dependent sunlight highlights.
+pub fn build_car(device: &wgpu::Device, queue: &wgpu::Queue, pipelines: &Pipelines, bundle: &Bundle, depth_alpha_clip: f32) -> Result<GsplatScene> {
+    let normals = crate::surface::normals(bundle);
+    build_inner(device, queue, pipelines, bundle, depth_alpha_clip, Some(&normals))
+}
+
+fn build_inner(device: &wgpu::Device, queue: &wgpu::Queue, pipelines: &Pipelines, bundle: &Bundle, depth_alpha_clip: f32, normals: Option<&[u32]>) -> Result<GsplatScene> {
     let textures = bundle
         .textures
         .iter()
         .map(|(name, tex)| (name.to_string(), upload_texture(device, queue, name, tex.width, tex.height, wgpu::TextureFormat::Rgba8Unorm, Some(&tex.rgba))))
         .collect();
     let width = bundle.textures["means_l"].width;
-    assemble(device, queue, pipelines, &bundle.meta, textures, &sog::centres(bundle), width, depth_alpha_clip)
+    assemble(device, queue, pipelines, &bundle.meta, textures, &sog::centres(bundle), width, depth_alpha_clip, normals)
 }
 
 /// Width of a streaming pool's per-splat textures.
@@ -119,7 +138,7 @@ pub fn pool(device: &wgpu::Device, queue: &wgpu::Queue, pipelines: &Pipelines, m
     );
     let meta = sog::Meta { count: rows * POOL_WIDTH, ..meta.clone() };
     let empty = vec![[f32::NAN; 3]; meta.count as usize];
-    assemble(device, queue, pipelines, &meta, textures, &empty, POOL_WIDTH, depth_alpha_clip)
+    assemble(device, queue, pipelines, &meta, textures, &empty, POOL_WIDTH, depth_alpha_clip, None)
 }
 
 /// The shared part of `build` and `pool`: codebook, samplers, buffers, sorter and bind groups around `textures`.
@@ -133,6 +152,7 @@ fn assemble(
     centres: &[[f32; 3]],
     splat_width: u32,
     depth_alpha_clip: f32,
+    normals: Option<&[u32]>,
 ) -> Result<GsplatScene> {
     let count = meta.count;
     let mut views: BTreeMap<String, wgpu::TextureView> = textures.iter().map(|(name, t)| (name.clone(), t.create_view(&Default::default()))).collect();
@@ -168,7 +188,7 @@ fn assemble(
             if buffers.contains_key(&b.name) {
                 continue;
             }
-            let size = if ty == "mat4x4f" { 64 } else { 16 };
+            let size = if b.name=="shadow_box" {crate::shadow::UNIFORM_BYTES} else if ty == "mat4x4f" { 64 } else { 16 };
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&b.name),
                 size,
@@ -189,7 +209,7 @@ fn assemble(
     let centers = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("splat centres"),
         size: u64::from(count.max(1)) * 12,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
     queue.write_buffer(&centers, 0, &f32s(&centres.concat()));
@@ -218,7 +238,27 @@ fn assemble(
         mapped_at_creation: false,
     });
     buffers.insert("splatDebug".into(), debug);
+    for (name, bytes) in [
+        ("carSurface", normals.map(u32s).unwrap_or_else(|| vec![0; 4])),
+        ("carLight", vec![0; 64]),
+    ] {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(name), size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, &bytes);
+        buffers.insert(name.into(), buffer);
+    }
 
+    let wheel_bytes = crate::wheel::WheelAnimation::default().bytes();
+    let rig = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wheel part poses"), size: wheel_bytes.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+    });
+    queue.write_buffer(&rig, 0, &wheel_bytes);
+    buffers.insert("wheelRig".into(), rig);
+
+    buffers.insert("splatCenters".into(), centers.clone());
     let scene_buffers = Buffers(&buffers);
     scene_buffers.set(queue, "means_mins", &f32s(&meta.means_mins));
     scene_buffers.set(queue, "means_maxs", &f32s(&meta.means_maxs));
@@ -272,26 +312,92 @@ fn assemble(
         mapped_at_creation: false,
     });
     queue.write_buffer(&quad, 0, &f32s(&quad_data));
+    // Reuse the two shared triangle corners: expensive SOG/SH/lighting runs four times per splat, not six.
+    let indices: Vec<u16> = (0..INSTANCE_SIZE as u16).flat_map(|slot| [0,1,2,0,2,3].map(|i|slot*4+i)).collect();
+    let quad_indices = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gsplat quad indices"), size: (indices.len()*2) as u64,
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+    });
+    queue.write_buffer(&quad_indices, 0, &indices.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<_>>());
 
     Ok(GsplatScene {
         color_groups,
         depth_groups,
         buffers,
         quad,
+        quad_indices,
         count,
         sorter,
         centre: sog::mean_centre(centres),
         bounds: robust_bounds(centres),
+        shadow_proxy:normals.and_then(|n|crate::shadow::Proxy::fit(centres,n)),
         textures,
         centers,
         splat_width,
+        wheels: None,
+        wheel_bytes,
+        wheels_dirty: std::cell::Cell::new(false),
+        uniform_cache: Default::default(),
+        io_metrics:Default::default(),
+        light_bytes: Default::default(),
+        haze_cutoff: std::cell::Cell::new(0.0),
     })
 }
 
 impl GsplatScene {
+    /// Sun and camera in model space, so the highlight follows the surface as the body and wheels rotate.
+    pub fn set_car_light(&self, queue: &wgpu::Queue, light: Option<crate::surface::CarLight>, view: &View) {
+        let mut data = [0.0f32; 16];
+        if let (Some(light), Some(to_model), Some(to_world)) = (light, camera::inverse(&view.model), camera::inverse(&view.view)) {
+            let sun = [0,1,2].map(|r| to_model[r]*light.sun[0]+to_model[r+4]*light.sun[1]+to_model[r+8]*light.sun[2]);
+            let eye = camera::transform_point(&to_model, [to_world[12],to_world[13],to_world[14]]);
+            data[..3].copy_from_slice(&sun);
+            data[3] = light.intensity.clamp(0.0, 4.0);
+            data[4..7].copy_from_slice(&eye);
+            data[7] = light.roughness.clamp(0.18, 0.8);
+            data[8..11].copy_from_slice(&light.color.map(|c| c.clamp(0.0,2.0)));
+        }
+        data[15] = self.haze_cutoff.get();
+        let bytes = f32s(&data);
+        if *self.light_bytes.borrow() != bytes {
+            queue.write_buffer(&self.buffers["carLight"], 0, &bytes);
+            *self.light_bytes.borrow_mut() = bytes;
+        }
+    }
+    pub fn set_haze_cutoff(&self, queue: &wgpu::Queue, cutoff: f32) {
+        let cutoff=cutoff.clamp(0.0,0.08);self.haze_cutoff.set(cutoff);
+        queue.write_buffer(&self.buffers["carLight"], 60, &cutoff.to_le_bytes());
+    }
+    /// Classifies the car once, preserving its original SOG indices. Level scenes never allocate a deformer.
+    pub fn configure_wheels(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, parts: &[u32]) {
+        assert!(self.wheels.is_none(), "configure wheels once on the original car scene");
+        assert_eq!(parts.len(), self.count as usize);
+        assert!(parts.iter().all(|p| *p < crate::wheel::PARTS as u32));
+        let labels: Vec<u8> = parts.iter().flat_map(|p| (p << 4).to_le_bytes()).collect();
+        queue.write_buffer(&self.buffers["splatLod"], 0, &labels);
+        self.wheels = Some(crate::wheel::GpuWheels::new(device, queue, &self.centers, &self.buffers["splatLod"], &self.buffers["wheelRig"], parts));
+        self.wheels_dirty.set(true);
+        // Conservative articulated bounds include steering and suspension beyond the static scan's box.
+        let reach = (0..3).map(|i| self.bounds.1[i]-self.bounds.0[i]).fold(0.0f32, f32::max) * 0.2;
+        self.bounds = (self.bounds.0.map(|v| v-reach), self.bounds.1.map(|v| v+reach));
+        self.sorter.invalidate();
+    }
+
+    pub fn set_wheel_animation(&mut self, queue: &wgpu::Queue, animation: &crate::wheel::WheelAnimation) {
+        let bytes = animation.bytes();
+        if bytes != self.wheel_bytes {
+            queue.write_buffer(&self.buffers["wheelRig"], 0, &bytes);
+            self.io_metrics.borrow_mut().count("wheel_pose_payload_bytes",bytes.len() as u64);
+            self.wheel_bytes = bytes;
+            self.wheels_dirty.set(true);
+            self.sorter.invalidate();
+        }
+    }
     /// Writes `centres.len()` splats into slots from `start`: one RGBA8 texel per splat for each named stream
     /// (`means_l`, `means_u`, `quats`, `scales`, `sh0`, `sh_labels`), tightly packed, and their centres.
     pub fn write_splats(&self, queue: &wgpu::Queue, start: u32, streams: &[(&str, &[u8])], centres: &[[f32; 3]]) {
+        self.io_metrics.borrow_mut().count("stream_splats_uploaded",centres.len() as u64);
+        self.io_metrics.borrow_mut().count("stream_payload_bytes",streams.iter().map(|(_,b)|b.len() as u64).sum::<u64>()+centres.len() as u64*12);
         let count = centres.len() as u32;
         for (name, texels) in streams {
             if let Some(texture) = self.textures.get(*name) {
@@ -299,11 +405,14 @@ impl GsplatScene {
             }
         }
         queue.write_buffer(&self.centers, u64::from(start) * 12, &f32s(&centres.concat()));
+        self.sorter.invalidate();
     }
 
     /// Empties `count` slots from `start`: their centres become NaN, which the sort culls.
     pub fn release(&self, queue: &wgpu::Queue, start: u32, count: u32) {
+        self.io_metrics.borrow_mut().count("stream_slots_released",u64::from(count));
         queue.write_buffer(&self.centers, u64::from(start) * 12, &f32s(&vec![f32::NAN; count as usize * 3]));
+        self.sorter.invalidate();
     }
 
     /// Records the level of detail and leaf held by `count` slots from `start` (for the debug colours).
@@ -351,9 +460,17 @@ impl GsplatScene {
 
     /// Writes a named uniform of the composed shaders (e.g. the car shadow's `shadow_box`). Unknown names are ignored.
     pub fn set_uniform(&self, queue: &wgpu::Queue, name: &str, bytes: &[u8]) {
+        let mut cached = self.uniform_cache.borrow_mut();
+        if cached.get(name).is_some_and(|old| old.as_slice() == bytes) { self.io_metrics.borrow_mut().count("uniform_cache_hits",1);return; }
+        {let mut m=self.io_metrics.borrow_mut();m.count("uniform_writes",1);m.count("uniform_payload_bytes",bytes.len() as u64);}
         Buffers(&self.buffers).set(queue, name, bytes);
+        if let Some(old) = cached.get_mut(name) { old.clear(); old.extend_from_slice(bytes); }
+        else { cached.insert(name.to_string(), bytes.to_vec()); }
     }
 
+    pub fn active_slots(&self)->u32{self.sorter.active_slots()}
+    pub fn reset_profile(&self){self.io_metrics.borrow_mut().reset();self.sorter.reset_profile();}
+    pub fn profile_json(&self)->serde_json::Value {serde_json::json!({"io":self.io_metrics.borrow().json(),"sort":self.sorter.profile_json(),"shadow_proxy":self.shadow_proxy.as_ref().map(|p|serde_json::json!({"bounds_model":p.bounds,"ellipsoids_model":p.ellipsoids}))})}
     /// Slots in this scene.
     pub fn capacity(&self) -> u32 {
         self.count
@@ -366,16 +483,21 @@ impl GsplatScene {
 
     /// `prepare`, also cutting the splats that hide `cutout`'s target (see `sort::Cutout`).
     pub fn prepare_with_cutout(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &View, model: &Mat4, cutout: Option<&crate::sort::Cutout>) {
-        let buffers = Buffers(&self.buffers);
-        buffers.set(queue, "matrix_model", &f32s(model));
-        buffers.set(queue, "matrix_view", &f32s(&view.view));
-        buffers.set(queue, "matrix_projection", &f32s(&view.projection));
-        buffers.set(queue, "camera_params", &f32s(&[1.0 / view.far, view.far, view.near, 0.0]));
+        self.prepare_timed(queue,encoder,view,model,cutout,None,"scene");
+    }
+    pub(crate) fn prepare_timed(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &View, model: &Mat4, cutout: Option<&crate::sort::Cutout>, timer: Option<&crate::timing::GpuTimer>, target: &'static str) {
+        if self.wheels_dirty.replace(false) {
+            if let Some(wheels) = &self.wheels { wheels.encode_timed(encoder,timer); }
+        }
+        self.set_uniform(queue, "matrix_model", &f32s(model));
+        self.set_uniform(queue, "matrix_view", &f32s(&view.view));
+        self.set_uniform(queue, "matrix_projection", &f32s(&view.projection));
+        self.set_uniform(queue, "camera_params", &f32s(&[1.0 / view.far, view.far, view.near, 0.0]));
         let (w, h) = (view.width as f32, view.height as f32);
-        buffers.set(queue, "viewport_size", &f32s(&[w, h, 1.0 / w, 1.0 / h]));
+        self.set_uniform(queue, "viewport_size", &f32s(&[w, h, 1.0 / w, 1.0 / h]));
         let view_model = camera::mul(&view.view, model);
         let clip = camera::mul(&view.projection, &view_model);
-        self.sorter.encode(queue, encoder, &view_model, Some(&clip), cutout.map(|c| (c, &view.view, model)), &self.buffers["splatOrder"]);
+        self.sorter.encode_timed(queue, encoder, &view_model, Some(&clip), cutout.map(|c| (c, &view.view, model)), &self.buffers["splatOrder"],timer,target);
     }
 
     /// Draws the sorted splats, blended, into a pass with a colour target and a depth attachment.
@@ -397,8 +519,9 @@ impl GsplatScene {
             pass.set_bind_group(index as u32, group, &[]);
         }
         pass.set_vertex_buffer(0, self.quad.slice(..));
+        pass.set_index_buffer(self.quad_indices.slice(..), wgpu::IndexFormat::Uint16);
         // Only the splats in view: the sort put them first and counted them.
-        pass.draw_indirect(self.sorter.draw_args(), 0);
+        pass.draw_indexed_indirect(self.sorter.draw_args(), 0);
     }
 
     /// Renders this scene alone offscreen (sky, then splats with `view.model`) and reads it back as tightly packed
@@ -511,6 +634,10 @@ pub fn color_pass<'e>(
     clear_depth: bool,
     label: &str,
 ) -> wgpu::RenderPass<'e> {
+    color_pass_timed(encoder,color,depth,clear_color,clear_depth,label,None)
+}
+
+pub(crate) fn color_pass_timed<'e>(encoder: &'e mut wgpu::CommandEncoder, color: &wgpu::TextureView, depth: &wgpu::TextureView, clear_color: bool, clear_depth: bool, label: &str, timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>) -> wgpu::RenderPass<'e> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -530,7 +657,7 @@ pub fn color_pass<'e>(
             }),
             stencil_ops: None,
         }),
-        timestamp_writes: None,
+        timestamp_writes,
         occlusion_query_set: None,
         multiview_mask: None,
     })
@@ -538,6 +665,9 @@ pub fn color_pass<'e>(
 
 /// A depth-only pass that clears `depth` to the far plane, for `GsplatScene::draw_depth`.
 pub fn depth_pass<'e>(encoder: &'e mut wgpu::CommandEncoder, depth: &wgpu::TextureView, label: &str) -> wgpu::RenderPass<'e> {
+    depth_pass_timed(encoder,depth,label,None)
+}
+pub(crate) fn depth_pass_timed<'e>(encoder: &'e mut wgpu::CommandEncoder, depth: &wgpu::TextureView, label: &str, timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>) -> wgpu::RenderPass<'e> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
         color_attachments: &[],
@@ -546,7 +676,7 @@ pub fn depth_pass<'e>(encoder: &'e mut wgpu::CommandEncoder, depth: &wgpu::Textu
             depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
             stencil_ops: None,
         }),
-        timestamp_writes: None,
+        timestamp_writes,
         occlusion_query_set: None,
         multiview_mask: None,
     })
@@ -567,8 +697,8 @@ impl Buffers<'_> {
 /// Six vertices per splat slot in an instance: two triangles over the quad corners in [-1, 1]².
 /// Each vertex is `(x, y, slot)`, where `slot` becomes `vertex_position.z` (the offset within an instance).
 fn quad_vertices() -> Vec<f32> {
-    const CORNERS: [(f32, f32); 6] = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
-    let mut out = Vec::with_capacity((INSTANCE_SIZE as usize) * 6 * 3);
+    const CORNERS: [(f32, f32); 4] = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+    let mut out = Vec::with_capacity((INSTANCE_SIZE as usize) * 4 * 3);
     for slot in 0..INSTANCE_SIZE {
         for (x, y) in CORNERS {
             out.extend_from_slice(&[x, y, slot as f32]);

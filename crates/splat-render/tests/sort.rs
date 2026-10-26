@@ -128,15 +128,17 @@ fn empty_slots_are_not_drawn() {
     let fade = buffer("fade", u64::from(count) * 4, wgpu::BufferUsages::STORAGE);
     let sorter = DepthSorter::new(&device, &queue, count, &centres_buffer, &fade);
     let order = buffer("order", u64::from(count) * 4, wgpu::BufferUsages::COPY_DST);
-    let readback = buffer("args", 16, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
+    let readback = buffer("args", 20, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
     let mut encoder = device.create_command_encoder(&Default::default());
     sorter.encode(&queue, &mut encoder, &IDENTITY, None, None, &order);
-    encoder.copy_buffer_to_buffer(sorter.draw_args(), 0, &readback, 0, 16);
+    encoder.copy_buffer_to_buffer(sorter.draw_args(), 0, &readback, 0, 20);
     queue.submit(Some(encoder.finish()));
     let slice = readback.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
     let args: Vec<u32> = slice.get_mapped_range().expect("mapped").chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
     let per_instance = splat_render::scene::INSTANCE_SIZE;
+    assert_eq!(args[0],per_instance*6,"six indices per Gaussian");
+    assert_eq!(&args[2..],&[0,0,0],"first index, base vertex and first instance must start at zero");
     assert_eq!(args[1], real.div_ceil(per_instance), "instances drawn cover only the {real} real splats, not the empty slots");
 }

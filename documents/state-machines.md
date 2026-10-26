@@ -21,7 +21,7 @@ Built in `crates/splat-game` (pure, no dependencies) and driven by `crates/splat
 
 Decisions taken for the open questions in section 6, so the build has a default. Change them by editing the tables:
 
-1. Wreck policy: a wreck costs no time. The car respawns at the checkpoint (the spawn) after 2 seconds.
+1. Collision policy: all physical impacts recover in place, with no automatic reset. The explicit development `wreck` command still exercises the two-second respawn flow. Out-of-bounds recovery remains automatic.
 2. Gating: `reset` is refused during the countdown and while paused. `reload` is refused in a race and while paused.
 3. Start: Practice releases the car at once, so it drops from `vehicle.spawn` as before. `game.start_mode = menu` starts parked.
 4. Asset failure: fatal. The game enters `Error(AssetFailed(car.body))`, the console stays up, and `quit` exits.
@@ -157,8 +157,8 @@ Rules [Rec]:
 | `Parked` | Body exists and is frozen at its spawn or grid pose. Used on the grid and in menus. |
 | `Driving { air_ticks }` | At least one ground contact. `air_ticks` counts consecutive samples with none. |
 | `Airborne` | No ground contact for at least `K_AIR` consecutive samples. |
-| `Crashed { hold }` | Impact between the crash and wreck thresholds. Short recovery window for FX and camera. |
-| `Wrecked` | Impact at or above the wreck threshold. No automatic exit. |
+| `Crashed { hold }` | Recoverable impact at or above the crash threshold. Short recovery window; no teleport. |
+| `Wrecked` | Explicit development `wreck` command only; physical impacts never enter this state. |
 | `Respawning { settle }` | Teleported to a checkpoint; waiting for speed to stay low for `SETTLE` samples. |
 
 #### 1.4.2 Physics signals consumed
@@ -178,7 +178,6 @@ Placeholder tuning constants (none measured):
 | --- | --- | --- |
 | `K_AIR` | 6 samples (100 ms at 60 Hz) | Debounce before Airborne |
 | `CRASH_MPS` | 8 m/s | Impact that enters Crashed |
-| `WRECK_MPS` | 15 m/s | Impact that enters Wrecked |
 | `CRASH_HOLD` | 30 samples | Time in Crashed |
 | `SETTLE` | 30 samples with speed below 0.5 m/s | Respawn complete |
 
@@ -197,9 +196,9 @@ Placeholder tuning constants (none measured):
 | V7 | Driving{n} | Sample | `ground_contacts == 0` and `n+1 < K_AIR` | Driving{n+1} | Counter only |
 | V8 | Driving{_} | Sample | `ground_contacts >= 1` | Driving{0} | Counter only |
 | V9 | Airborne | Sample | `ground_contacts >= 1` | Driving{0} | — |
-| V10 | Driving, Airborne | Sample | `impact >= WRECK_MPS` | Wrecked | Notify game (`VehicleWrecked`); FX |
-| V11 | Driving, Airborne | Sample | `CRASH_MPS <= impact < WRECK_MPS` | Crashed{0} | Notify FX (shake, dust) |
-| V12 | Crashed{h} | Sample | `impact >= WRECK_MPS` | Wrecked | As V10 |
+| V10 | — | — | Removed: physical impacts never wreck the car | — | — |
+| V11 | Driving, Airborne | Sample | `impact >= CRASH_MPS` | Crashed{0} | Notify FX (shake, dust) |
+| V12 | — | — | Removed: repeated impacts recover in place | — | — |
 | V13 | Crashed{h} | Sample | `h+1 < CRASH_HOLD` | Crashed{h+1} | Counter only |
 | V14 | Crashed{h} | Sample | `h+1 >= CRASH_HOLD` and `ground_contacts >= 1` | Driving{0} | — |
 | V15 | Crashed{h} | Sample | `h+1 >= CRASH_HOLD` and `ground_contacts == 0` | Airborne | — |
@@ -211,7 +210,7 @@ Placeholder tuning constants (none measured):
 | V21 | Driving, Airborne, Crashed, Wrecked, Respawning | Park | — | Parked | Freeze body |
 | V22 | Driving, Airborne, Crashed | Command(Reset) | — | Respawning{0} | Teleport; zero velocity (same as the console `reset`) |
 | V23 | Parked | Command(Reset) | — | Parked (unchanged) | Teleport to spawn; zero velocity; stays frozen |
-| V24 | Driving, Airborne, Crashed, Parked | Command(Wreck) | dev build only | Wrecked | As V10 |
+| V24 | Driving, Airborne, Crashed, Parked | Command(Wreck) | dev build only | Wrecked | Notify game (`VehicleWrecked`); development only |
 | V25 | Respawning | Command(Reset) | — | (rejected: AlreadyRespawning) | — |
 | V26 | Unloaded, Loading | Command(*) | — | (rejected: NotLoaded) | — |
 | V27 | Any loaded state | Unload | — | Unloaded | Despawn body |
@@ -405,7 +404,7 @@ pub enum VehicleEffect {
     Notify(VehicleNotice),
 }
 pub enum VehicleNotice { CarFailed, Wrecked(CarId), OutOfBounds }
-pub struct VehicleTuning { pub k_air: u8, pub crash_mps: f32, pub wreck_mps: f32,
+pub struct VehicleTuning { pub k_air: u8, pub crash_mps: f32,
                            pub crash_hold: u16, pub settle: u16 }
 pub struct VehicleTransition { pub next: VehicleState, pub effects: Vec<VehicleEffect>, pub outcome: Outcome }
 pub fn step_vehicle(state: &VehicleState, event: VehicleEvent, tuning: &VehicleTuning) -> VehicleTransition;
@@ -495,7 +494,7 @@ Every row in the three tables needs at least one test: 34 game rows (G1–G34), 
 - **Game.** G13, G22, G32, G33 and G34 (rejections). G29 (ignored default). G23 with `assets_ready == false`: no transition.
 - **Game, pause.** G7 then G30 with `n = 3`: exactly 3 engine ticks, then back to Paused with no other change.
 - **Vehicle hysteresis.** `Driving` with `K_AIR - 1` airborne samples stays Driving. The `K_AIR`-th enters Airborne. A ground contact in the middle resets the counter.
-- **Vehicle thresholds.** Impact exactly `CRASH_MPS` enters Crashed. Exactly `WRECK_MPS` enters Wrecked. Just under `CRASH_MPS` does nothing.
+- **Vehicle thresholds.** Impact exactly `CRASH_MPS` enters Crashed. Severe and repeated impacts recover in place without entering Wrecked or teleporting. Just under `CRASH_MPS` does nothing.
 - **Vehicle settle.** Speed 0.49 for `SETTLE` samples respawns to Driving. Speed 0.5 does not count.
 - **Vehicle reset.** V22 vs V23: reset while driving starts a respawn; reset while parked stays parked.
 - **Asset retry.** `Network` retries up to 3 attempts, then fails. `NotFound` fails on attempt 1. `DecodeError` never retries.

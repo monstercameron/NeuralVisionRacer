@@ -1,0 +1,72 @@
+[hud]
+name = Wheel acceleration preview
+anchor = bottom-center
+size = 1000 130
+height = 0.14
+margin = 0.025
+
+[gauge.back]
+type = panel
+center = 500 65
+size = 1000 130
+radius = 12
+color = #101820EE
+border_color = #58DCC840
+border_width = 1
+
+[gauge.title]
+type = text
+center = 500 21
+text = 0 - 60 MPH  /  CONTINUOUS WHEEL ROTATION
+size = 13
+color = #BFEDE4
+
+[gauge.speed]
+type = digital
+channel = speed_kmh
+center = 105 77
+size = 48
+digits = 2
+color = #FFFFFF
+
+[gauge.units]
+type = text
+center = 205 84
+text = MPH
+size = 18
+color = #BFEDE4
+
+[gauge.rpm]
+type = digital
+channel = rpm
+center = 440 76
+size = 26
+digits = 4
+color = #FFFFFF
+
+[gauge.rpm_units]
+type = text
+center = 540 84
+text = RPM
+size = 11
+color = #BFEDE4
+
+[gauge.gear]
+type = gear
+center = 675 72
+size = 30
+color = #FFFFFF
+
+[gauge.gear_label]
+type = text
+center = 735 84
+text = GEAR
+size = 11
+color = #BFEDE4
+
+[gauge.subtitle]
+type = text
+center = 500 115
+text = SHUTTER BLUR  /  WHEEL THICKNESS STAYS FIXED
+size = 9
+color = #FFFFFF99

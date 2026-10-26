@@ -210,6 +210,7 @@ fn run_headless(mut engine: Engine, mut frontend: Frontend, console: Option<Rece
 
 /// Runs one console line, prints its reply, and applies any effect that needs the renderer.
 pub fn handle_console_line(engine: &mut Engine, frontend: &mut Frontend, line: &str) -> Effect {
+    if line.split_whitespace().next()==Some("perf") {let reply=match frontend.renderer(engine){Ok(r)=>r.profile_command(engine,line).unwrap(),Err(e)=>Reply::err("perf",e).to_json_line()};println!("{reply}");return Effect::None;}
     match console::parse(line) {
         Ok(None) => Effect::None,
         Ok(Some(Command::Screenshot(path))) => {

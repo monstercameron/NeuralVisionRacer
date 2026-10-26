@@ -79,6 +79,9 @@ fn blur_px(distance: f32) -> f32 {
 fn fs_main(in: VertexOut) -> @location(0) vec4f {
     let base = textureSampleLevel(scene, scene_sampler, in.uv, 0.0);
     let px = vec2i(in.position.xy);
+    // Growing the car mask can only bring the focus distance nearer. A pixel that is already sharp
+    // stays sharp, so skip the eight extra car-depth taps across the road and other in-focus areas.
+    if (blur_px(distance_at(px)) < 0.5) { return base; }
     let here = centre_distance(px);
     let radius = blur_px(here);
     if (radius < 0.5) {

@@ -4,8 +4,8 @@
 //   periphery while the middle (the car) stays sharp;
 // - colour fringing: red and blue sampled slightly outwards and inwards, growing towards the edges (chromatic
 //   aberration);
-// - the grade: a filmic contrast curve, teal shadows and warm highlights ("teal and orange"), a little saturation and
-//   a soft vignette;
+// - the grade: luminance contrast, a soft highlight shoulder, warm light/cool shadows,
+//   exposure/balance, highlight desaturation, gamut compression and lens falloff;
 // - film grain: luminance-weighted noise that changes every frame.
 //
 // Every effect scales with its uniform; all zero is a plain copy.
@@ -13,19 +13,27 @@
 struct PostUniforms {
     // x: peripheral blur (0..1), y: fringing (uv units at the corner), z: grain, w: grade (0..1).
     strength: vec4f,
-    // x: time in seconds, y: 1 / width, z: 1 / height, w: unused.
+    // x: time in seconds, y: 1 / width, z: 1 / height, w: highlight shoulder.
     frame: vec4f,
-    // x: contrast (S-curve mix), y: saturation, z: vignette, w: where the blur starts (screen radius).
+    // x: luminance contrast, y: saturation, z: vignette, w: where the blur starts (screen radius).
     grade: vec4f,
     // rgb: tint added to the shadows; w: blur streak length (uv).
     shadow_tint: vec4f,
     // rgb: tint added to the highlights.
     highlight_tint: vec4f,
+    // x: car sharpening, y: wider local contrast; zw unused.
+    car: vec4f,
+    // x: exposure stops, y: warm/cool, z: magenta/green, w: neutral black floor.
+    film: vec4f,
+    // Projected car centre/radii (uv); a soft region fills holes in the core depth mask.
+    car_region: vec4f,
 };
 
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var scene_sampler: sampler;
 @group(0) @binding(2) var<uniform> post: PostUniforms;
+@group(0) @binding(3) var car_depth: texture_depth_2d;
+@group(0) @binding(4) var level_depth: texture_depth_2d;
 
 struct VertexOut {
     @builtin(position) position: vec4f,
@@ -41,7 +49,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
     return out;
 }
 
-const BLUR_TAPS: i32 = 10;
+const BLUR_TAPS: i32 = 12;
 
 fn hash(p: vec2f) -> f32 {
     let q = fract(p * vec2f(443.897, 441.423));
@@ -53,8 +61,110 @@ fn luminance(c: vec3f) -> f32 {
     return dot(c, vec3f(0.2126, 0.7152, 0.0722));
 }
 
+// Explicit sRGB working-space conversions: the texture sampler and output target
+// already handle transfer functions, so the grade must not apply gamma twice.
+fn linearToDisplay(c: vec3f) -> vec3f {
+    let positive = max(c, vec3f(0.0));
+    return select(positive * 12.92, 1.055 * pow(positive, vec3f(1.0 / 2.4)) - 0.055,
+                  positive > vec3f(0.0031308));
+}
+fn displayToLinear(c: vec3f) -> vec3f {
+    let positive = max(c, vec3f(0.0));
+    return select(positive / 12.92, pow((positive + 0.055) / 1.055, vec3f(2.4)),
+                  positive > vec3f(0.04045));
+}
+
+fn visibleCar(px: vec2i) -> bool {
+    let size = vec2i(textureDimensions(car_depth));
+    let p = clamp(px, vec2i(0), size - vec2i(1));
+    let car = textureLoad(car_depth, p, 0);
+    return car < 1.0 && car < textureLoad(level_depth, p, 0);
+}
+
+fn displaySample(uv: vec2f) -> vec3f {
+    return linearToDisplay(textureSampleLevel(scene, scene_sampler, uv, 0.0).rgb);
+}
+
+// Interior-only unsharp mask. Erode the depth mask to avoid halos at silhouettes and occluders.
+fn clarifyCar(uv: vec2f, colour: vec3f, motion: f32) -> vec3f {
+    if (post.car.x <= 0.0 && post.car.y <= 0.0) { return colour; }
+    let px = vec2i(uv * vec2f(textureDimensions(car_depth)));
+    if (!visibleCar(px)) { return colour; }
+    let radius = 3;
+    if (!visibleCar(px + vec2i(radius, 0)) || !visibleCar(px - vec2i(radius, 0)) ||
+        !visibleCar(px + vec2i(0, radius)) || !visibleCar(px - vec2i(0, radius))) { return colour; }
+    let texel = post.frame.yz;
+    let n = displaySample(uv - vec2f(0.0, texel.y));
+    let s = displaySample(uv + vec2f(0.0, texel.y));
+    let e = displaySample(uv + vec2f(texel.x, 0.0));
+    let w = displaySample(uv - vec2f(texel.x, 0.0));
+    let average = (n + s + e + w) * 0.25;
+    let lo = min(colour, min(min(n, s), min(e, w)));
+    let hi = max(colour, max(max(n, s), max(e, w)));
+    let range = max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z);
+    let detail = clamp((colour - average) * post.car.x / (1.0 + 3.0 * range), vec3f(-0.04), vec3f(0.04));
+    let wide = (displaySample(uv + vec2f(3.0 * texel.x, 0.0)) + displaySample(uv - vec2f(3.0 * texel.x, 0.0)) +
+                displaySample(uv + vec2f(0.0, 3.0 * texel.y)) + displaySample(uv - vec2f(0.0, 3.0 * texel.y))) * 0.25;
+    let local = clamp((colour - wide) * post.car.y, vec3f(-0.025), vec3f(0.025));
+    // Do not sharpen against intentional speed blur.
+    return clamp(colour + (detail + local) * (1.0 - clamp(motion * 4.0, 0.0, 1.0)), vec3f(0.0), vec3f(1.0));
+}
+
+// Compress chroma toward the same luminance until every channel is inside the SDR gamut.
+// This avoids clipped orange/teal channels changing hue at strong grade settings.
+fn fitGamut(c: vec3f) -> vec3f {
+    let y = clamp(luminance(c), 0.0, 1.0);
+    let chroma = c - vec3f(y);
+    var scale = 1.0;
+    for (var i = 0; i < 3; i++) {
+        if (chroma[i] > 0.00001) { scale = min(scale, (1.0 - y) / chroma[i]); }
+        if (chroma[i] < -0.00001) { scale = min(scale, -y / chroma[i]); }
+    }
+    return vec3f(y) + chroma * clamp(scale, 0.0, 1.0);
+}
+
+fn filmGrade(c: vec3f, radius: f32) -> vec3f {
+    let original_y = luminance(c);
+    let protected_white = 1.0 - smoothstep(0.80, 1.0, original_y);
+    // Exposure and white balance in linear light; contrast and split tones in display space.
+    let balance = vec3f(0.20 * post.film.y + 0.10 * post.film.z,
+                       -0.10 * post.film.z, -0.20 * post.film.y + 0.10 * post.film.z);
+    let exposed = linearToDisplay(displayToLinear(c) * exp2(vec3f(post.film.x) + balance * protected_white));
+    let y = max(luminance(exposed), 0.0);
+    let x = clamp(y, 0.0, 1.0);
+    // Luminance-only sigmoid: stronger midtone separation without three different hue curves.
+    let power = 1.0 + clamp(post.grade.x, 0.0, 1.0) * 0.75;
+    let lo = pow(x, power);
+    let hi = pow(1.0 - x, power);
+    let sigmoid = lo / max(lo + hi, 0.00001);
+    // A near-linear toe preserves shaded asphalt and tire marks instead of crushing
+    // them into black. The stronger sigmoid takes over through the midtones.
+    let contrast = mix(x * (1.0 - 0.22 * clamp(post.grade.x, 0.0, 1.0)), sigmoid,
+                       smoothstep(0.04, 0.35, x));
+    // Compress display-referred highlights smoothly. This cannot recover detail already
+    // clipped into the scene's RGBA8 target; it prevents the grade from clipping more.
+    let shoulder = 0.65 + 0.35 * (1.0 - exp(-max(contrast - 0.65, 0.0) / 0.35));
+    var tone = mix(contrast, min(contrast, shoulder), post.frame.w);
+    tone += post.film.w * (1.0 - smoothstep(0.0, 0.35, tone));
+    var graded = exposed * (tone / max(y, 0.00001));
+    if (y < 0.00001) { graded = vec3f(post.film.w); }
+    // Balanced split tones: no colour added to true blacks or protected white highlights.
+    let shadows = smoothstep(0.015, 0.10, tone) * (1.0 - smoothstep(0.20, 0.58, tone));
+    let lights = smoothstep(0.40, 0.82, tone) * protected_white;
+    let cool = post.shadow_tint.rgb - vec3f(luminance(post.shadow_tint.rgb));
+    let warm = post.highlight_tint.rgb - vec3f(luminance(post.highlight_tint.rgb));
+    graded += cool * shadows + warm * lights;
+    let l = luminance(graded);
+    let saturation = clamp(post.grade.y, 0.0, 2.0) * (1.0 - 0.30 * smoothstep(0.65, 1.0, tone));
+    graded = vec3f(l) + (graded - vec3f(l)) * saturation;
+    // Rounded lens falloff, independent of viewport aspect ratio, inside the existing pass.
+    let falloff = 1.0 - clamp(post.grade.z, 0.0, 0.65) * smoothstep(0.55, 1.45, radius);
+    return fitGamut(graded) * falloff;
+}
+
 // Samples the scene with colour fringing: red pushed out, blue pulled in, along the line from the centre.
 fn fringed(uv: vec2f, offset: vec2f) -> vec3f {
+    if (post.strength.y == 0.0) { return textureSampleLevel(scene, scene_sampler, uv, 0.0).rgb; }
     let r = textureSampleLevel(scene, scene_sampler, uv + offset, 0.0).r;
     let g = textureSampleLevel(scene, scene_sampler, uv, 0.0).g;
     let b = textureSampleLevel(scene, scene_sampler, uv - offset, 0.0).b;
@@ -70,37 +180,48 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
     let fringe = from_centre * radius * post.strength.y;
 
     // Peripheral blur: a short streak towards the centre, only outside the middle of the screen.
-    let edge = smoothstep(post.grade.w, 1.1, radius) * post.strength.x;
+    let px = vec2i(uv * vec2f(textureDimensions(car_depth)));
+    // The speed cue belongs to the environment. Protect the visible car, including
+    // a small silhouette margin, even when the chase camera puts it near an edge.
+    var protect_car = false;
+    if (post.strength.x > 0.0) {
+        protect_car = visibleCar(px) || visibleCar(px + vec2i(3, 0)) || visibleCar(px - vec2i(3, 0)) ||
+                      visibleCar(px + vec2i(0, 3)) || visibleCar(px - vec2i(0, 3));
+    }
+    var environment = 1.0;
+    if (post.car_region.z > 0.0 && post.car_region.w > 0.0) {
+        let d = abs((uv - post.car_region.xy) / post.car_region.zw);
+        let squared = d * d;
+        let rounded_box = sqrt(sqrt(dot(squared, squared)));
+        environment = smoothstep(0.90, 1.12, rounded_box);
+    }
+    let edge = select(smoothstep(post.grade.w, 1.1, radius) * post.strength.x * environment, 0.0, protect_car);
     var colour = vec3f(0.0);
     if (edge > 0.001) {
         let step = -from_centre * edge * post.shadow_tint.w / f32(BLUR_TAPS);
         var total = 0.0;
         for (var i = 0; i < BLUR_TAPS; i = i + 1) {
             let w = 1.0 - f32(i) / f32(BLUR_TAPS);
-            colour += fringed(uv + step * f32(i), fringe) * w;
-            total += w;
+            let sample_uv = clamp(uv + step * f32(i), vec2f(0.0), vec2f(1.0));
+            // Do not drag bright car paint out into the road's radial streaks.
+            if (!visibleCar(vec2i(sample_uv * vec2f(textureDimensions(car_depth))))) {
+                colour += fringed(sample_uv, fringe) * w;
+                total += w;
+            }
         }
-        colour /= total;
+        colour /= max(total, 0.00001);
     } else {
         colour = fringed(uv, fringe);
     }
 
     // Grade and grain in display space (the scene texture is sRGB, so samples arrive linear).
-    colour = pow(max(colour, vec3f(0.0)), vec3f(1.0 / 2.2));
+    colour = linearToDisplay(colour);
+    colour = clarifyCar(uv, colour, edge);
 
     // The grade, blended in by its strength.
     let grade = post.strength.w;
     if (grade > 0.0) {
-        // Filmic S-curve on each channel, keeping black and white where they were.
-        let curved = colour * colour * (3.0 - 2.0 * colour);
-        var graded = mix(colour, curved, post.grade.x);
-        // Teal in the shadows, warm orange in the highlights (by default; the tints are settings).
-        let l = luminance(graded);
-        graded += post.shadow_tint.rgb * (1.0 - smoothstep(0.0, 0.5, l)) + post.highlight_tint.rgb * smoothstep(0.45, 1.0, l);
-        // Saturation, then a soft vignette.
-        graded = mix(vec3f(luminance(graded)), graded, post.grade.y);
-        graded *= 1.0 - post.grade.z * smoothstep(0.55, 1.45, radius);
-        colour = mix(colour, clamp(graded, vec3f(0.0), vec3f(1.0)), grade);
+        colour = mix(colour, filmGrade(colour, radius), clamp(grade, 0.0, 1.0));
     }
 
     // Film grain, stronger in the mid-tones, new every frame.
@@ -110,5 +231,5 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
         let l = luminance(colour);
         colour += vec3f(n * post.strength.z * (0.4 + 4.0 * l * (1.0 - l)));
     }
-    return vec4f(pow(clamp(colour, vec3f(0.0), vec3f(1.0)), vec3f(2.2)), 1.0);
+    return vec4f(displayToLinear(clamp(colour, vec3f(0.0), vec3f(1.0))), 1.0);
 }

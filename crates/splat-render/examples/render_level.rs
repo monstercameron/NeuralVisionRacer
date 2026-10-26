@@ -59,7 +59,20 @@ fn main() {
         stream = Some(s);
     } else {
         let started = Instant::now();
-        let chunks: Vec<sog::Bundle> = meta.chunk_dirs(lod).iter().map(|c| sog::load_dir(&dir.join(c)).expect("load chunk")).collect();
+        let mut chunks: Vec<sog::Bundle> = meta.chunk_dirs(lod).iter().map(|c| sog::load_dir(&dir.join(c)).expect("load chunk")).collect();
+        // Diagnostic ground slice: hide roofs, trees and reconstructed sky above this world Y, without editing
+        // the source files. Use LEVEL_ROT=z with SLICE_Y=<ceiling> for overhead baked-shadow inspection.
+        if let Some(ceiling) = std::env::var("SLICE_Y").ok().and_then(|v| v.parse::<f32>().ok()) {
+            assert_eq!(std::env::var("LEVEL_ROT").as_deref(), Ok("z"));
+            for chunk in &mut chunks {
+                let max_radius = std::env::var("SLICE_RADIUS").ok().and_then(|v|v.parse::<f32>().ok()).unwrap_or(f32::INFINITY);
+                let floor = std::env::var("SLICE_MIN_Y").ok().and_then(|v|v.parse::<f32>().ok()).unwrap_or(f32::NEG_INFINITY);
+                for (i, p) in sog::centres(chunk).iter().enumerate() {
+                    let big = (0..3).any(|a|chunk.meta.scales_codebook[chunk.textures["scales"].rgba[i*4+a] as usize].exp() > max_radius);
+                    if -p[1] > ceiling || -p[1] < floor || big { chunk.textures.get_mut("sh0").unwrap().rgba[i * 4 + 3] = 0; }
+                }
+            }
+        }
         let loaded = started.elapsed();
         let note = frame.set_level(&chunks).expect("upload level");
         println!("level lod {lod}: {} chunks loaded in {loaded:?}, merged and uploaded in {:?} {note:?}", chunks.len(), started.elapsed() - loaded);

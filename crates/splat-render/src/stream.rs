@@ -138,6 +138,8 @@ pub struct StreamStats {
     pub detail_scale: f32,
 }
 
+impl StreamStats { pub fn json(&self)->serde_json::Value { serde_json::json!({"resident_splats":self.resident_splats,"wanted_splats":self.wanted_splats,"active_slots":self.active_slots,"leaves_per_lod":self.leaves_per_lod,"leaves_empty":self.leaves_empty,"leaves_hidden":self.leaves_hidden,"leaves_pending":self.leaves_pending,"chunks_loaded":self.chunks_loaded,"chunks_in_flight":self.chunks_in_flight,"leaves_visible":self.leaves_visible,"fading":self.fading,"switches":self.switches,"near_switches":self.near_switches,"palettes_in_use":self.palettes_in_use,"missing_sh":self.missing_sh,"fades_cut":self.fades_cut,"hard_swaps":self.hard_swaps,"detail_met":self.detail_met,"detail_scale":self.detail_scale}) } }
+
 #[derive(Debug, Clone, Copy)]
 struct Resident {
     lod: usize,

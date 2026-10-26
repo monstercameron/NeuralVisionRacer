@@ -11,6 +11,13 @@ pub mod scene;
 pub mod sog;
 pub mod sort;
 pub mod stream;
+pub mod wheel;
+pub mod surface;
+pub mod shadow;
+pub mod tire;
+pub mod dust;
+mod timing;
+pub mod metrics;
 
 use splat_wgsl::binding::{Binding, BindingKind};
 use std::collections::BTreeMap;
@@ -20,7 +27,7 @@ use std::collections::BTreeMap;
 /// Uniforms are `Uniform` buffers visible to all stages. Textures are `Float` sampled textures;
 /// the engine's unfilterable sentinel (RGBA32F codebook) is `filterable: false`. Samplers are
 /// `NonFiltering`, because the engine samples splat data with `textureLoad`, not filtered sampling.
-/// Storage buffers are read-only storage visible to the vertex stage.
+/// Storage buffers serve vertex animation and fragment opacity cleanup, so both stages can read them.
 pub fn bind_group_entries(bindings: &[Binding]) -> BTreeMap<u32, Vec<wgpu::BindGroupLayoutEntry>> {
     let mut groups: BTreeMap<u32, Vec<wgpu::BindGroupLayoutEntry>> = BTreeMap::new();
     for b in bindings {
@@ -53,7 +60,7 @@ pub fn bind_group_entries(bindings: &[Binding]) -> BTreeMap<u32, Vec<wgpu::BindG
             },
             BindingKind::Storage { access, .. } => wgpu::BindGroupLayoutEntry {
                 binding: b.binding,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: access == "read" },
                     has_dynamic_offset: false,
@@ -222,3 +229,6 @@ pub fn gsplat_depth_pipeline(
         cache: None,
     })
 }
+
+#[cfg(test)]
+mod shadow_gpu_tests;

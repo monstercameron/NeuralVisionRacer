@@ -39,6 +39,13 @@ pub fn grid_cells(meta: &Meta) -> [u32; 3] {
     [0, 1, 2].map(|i| ((meta.grid_max[i] - meta.grid_min[i]) / meta.resolution).ceil() as u32)
 }
 
+/// Tight obstacle box, in metres relative to the collision grid origin.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WallBox {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
 impl Octree {
     /// Loads `scene.voxel.json` and `scene.voxel.bin` from `dir`.
     pub fn load(dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
@@ -235,6 +242,72 @@ impl Octree {
         (walls, [nbx, nbz])
     }
 
+    /// Refine candidate wall blocks using their actual voxel masks. Empty parts of mixed
+    /// leaves and vertical gaps stay empty; isolated scan voxels do not become barriers.
+    /// Greedy boxes are bounded by occupied cells, never extruded to an invented height.
+    pub fn wall_boxes(&self, walls: &[Option<u32>], dims: [usize; 2], band: (usize, usize)) -> Vec<WallBox> {
+        let grid = grid_cells(&self.meta);
+        let nby = (grid[1] as usize).div_ceil(4);
+        let mut boxes = Vec::new();
+        let res = self.meta.resolution;
+        for bx in 0..dims[0] {
+            for bz in 0..dims[1] {
+                let Some(road) = walls[bx * dims[1] + bz] else { continue };
+                let lo = (road as usize + band.0).min(nby);
+                let hi = (road as usize + band.1).min(nby);
+                if lo >= hi { continue; }
+                let ny = (hi - lo) * 4;
+                let index = |x: usize, y: usize, z: usize| (x * 4 + z) * ny + y;
+                let mut occupied = vec![false; 16 * ny];
+                for by in lo..hi {
+                    let mut mask = self.leaf_mask([(bx * 4) as u32, (by * 4) as u32, (bz * 4) as u32]);
+                    while mask != 0 {
+                        let bit = mask.trailing_zeros() as usize;
+                        let (x,y,z) = (bit & 3, (bit >> 2) & 3, (bit >> 4) & 3);
+                        if bx * 4 + x < grid[0] as usize && by * 4 + y < grid[1] as usize && bz * 4 + z < grid[2] as usize {
+                            occupied[index(x, (by - lo) * 4 + y, z)] = true;
+                        }
+                        mask &= mask - 1;
+                    }
+                }
+                // Require local surface/line support. A real thin wall, post or sheet has
+                // at least two face neighbours; one stray occupied voxel does not.
+                let raw = occupied.clone();
+                for x in 0..4 { for z in 0..4 { for y in 0..ny {
+                    let k = index(x,y,z);
+                    if !raw[k] { continue; }
+                    let neighbours = [(x.checked_sub(1),Some(y),Some(z)),
+                        ((x + 1 < 4).then_some(x + 1),Some(y),Some(z)),
+                        (Some(x),y.checked_sub(1),Some(z)),
+                        (Some(x),(y + 1 < ny).then_some(y + 1),Some(z)),
+                        (Some(x),Some(y),z.checked_sub(1)),
+                        (Some(x),Some(y),(z + 1 < 4).then_some(z + 1))]
+                        .iter().filter(|(a,b,c)| match (a,b,c) {
+                            (Some(a),Some(b),Some(c)) => raw[index(*a,*b,*c)], _ => false
+                        }).count();
+                    if neighbours < 2 { occupied[k] = false; }
+                }}}
+                for y in 0..ny { for x in 0..4 { for z in 0..4 {
+                    if !occupied[index(x,y,z)] { continue; }
+                    let mut d = 1;
+                    while z + d < 4 && occupied[index(x,y,z + d)] { d += 1; }
+                    let mut w = 1;
+                    while x + w < 4 && (z..z + d).all(|zz| occupied[index(x + w,y,zz)]) { w += 1; }
+                    let mut h = 1;
+                    while y + h < ny && (x..x + w).all(|xx| (z..z + d).all(|zz| occupied[index(xx,y + h,zz)])) { h += 1; }
+                    for xx in x..x + w { for zz in z..z + d { for yy in y..y + h {
+                        occupied[index(xx,yy,zz)] = false;
+                    }}}
+                    boxes.push(WallBox {
+                        min: [(bx * 4 + x) as f32 * res, (lo * 4 + y) as f32 * res, (bz * 4 + z) as f32 * res],
+                        max: [(bx * 4 + x + w) as f32 * res, (lo * 4 + y + h) as f32 * res, (bz * 4 + z + d) as f32 * res],
+                    });
+                }}}
+            }
+        }
+        boxes
+    }
+
     /// Floor cells: for each 4×4 column of cells, the lowest solid-to-empty surface that has at least `clearance`
     /// cells of air above it (or the top of the grid). Returns cell indices `[x, y, z]` of the solid cells whose top
     /// face is the walkable surface, one per (x, z) column in that footprint.
@@ -337,6 +410,46 @@ mod tests {
             if bit >= 32 { 1 << (bit - 32) } else { 0 },
         ];
         Octree { meta, words }
+    }
+
+    fn tree_with_cells(cells: &[[u32; 3]]) -> Octree {
+        let mut masks = [0u64; 8];
+        for &[x,y,z] in cells {
+            let octant = (x / 4) | ((y / 4) << 1) | ((z / 4) << 2);
+            masks[octant as usize] |= 1 << ((x % 4) + 4 * (y % 4) + 16 * (z % 4));
+        }
+        let child_mask = masks.iter().enumerate().fold(0u32,|m,(i,v)| m | if *v != 0 {1 << i} else {0});
+        let count = child_mask.count_ones() as usize;
+        let mut words = vec![(child_mask << 24) | 1];
+        words.extend(0..count as u32);
+        for mask in masks.into_iter().filter(|v| *v != 0) { words.extend([mask as u32,(mask >> 32) as u32]); }
+        Octree {meta: Meta {grid_min:[0.0;3],grid_max:[0.4;3],resolution:0.05,tree_depth:1,
+            node_count:count + 1,leaf_data_count:count * 2},words}
+    }
+
+    #[test]
+    fn fitted_walls_keep_thin_visible_surfaces_without_inflating_a_mixed_leaf() {
+        let mut cells: Vec<_> = (0..8).flat_map(|y| (0..4).map(move |z| [2,y,z])).collect();
+        cells.push([0,4,0]); // isolated scan speckle
+        let boxes=tree_with_cells(&cells).wall_boxes(&[Some(0);4],[2,2],(0,2));
+        assert!(!boxes.is_empty());
+        for b in &boxes {
+            assert!((b.min[0]-0.1).abs()<1e-5 && (b.max[0]-0.15).abs()<1e-5,
+                "a 5 cm facade must not become a 20 cm wall: {b:?}");
+            assert!(b.max[1] <= 0.4 + 1e-5, "source height, not a 3 m extrusion");
+        }
+    }
+
+    #[test]
+    fn wall_geometry_preserves_clear_air_under_overhangs_and_between_surfaces() {
+        let cells:Vec<_>=[1,6].into_iter().flat_map(|y| (0..4).flat_map(move |x| (0..4).map(move |z|[x,y,z]))).collect();
+        let boxes=tree_with_cells(&cells).wall_boxes(&[Some(0);4],[2,2],(0,2));
+        assert!(!boxes.is_empty());
+        assert!(boxes.iter().all(|b| b.max[1]<=0.10001 || b.min[1]>=0.29999), "never bridge empty vertical space");
+        let noise=tree_with_cells(&[[1,2,1]]).wall_boxes(&[Some(0);4],[2,2],(0,2));
+        assert!(noise.is_empty(), "an isolated voxel is not a wall");
+        let post:Vec<_>=(0..8).map(|y|[1,y,1]).collect();
+        assert!(!tree_with_cells(&post).wall_boxes(&[Some(0);4],[2,2],(0,2)).is_empty(), "retain supported narrow posts");
     }
 
     #[test]
