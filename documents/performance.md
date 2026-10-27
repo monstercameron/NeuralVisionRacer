@@ -122,3 +122,10 @@ time from 21.168 to 21.103 ms. That small difference is not a demonstrated FPS g
 evidence is one fewer full-screen pass and byte-identical 1280×720 output including the dashboard. Raw paired
 measurements and images are retained in the optimization session evidence. Use `presentation=copy` or `direct`
 on the browser benchmark; `verify=1` additionally checks two resize sizes and debug overlays after measurements.
+
+
+### CPU mechanics and collision search (October 26–27 optimization)
+
+`cargo run --release --manifest-path crates/splat-car/Cargo.toml --example mechanics_probe -- 100000 4` measures instrumented pure driveline steps with allocation counts and output fingerprints. No GPU is created. Borrowing the spec and validating a cached peak-power value removes seven heap allocations per warmed step; paired baseline/candidate traces remain bit-identical, including public spec edits. Component medians were about 886–890 ns before versus 61–65 ns after; these are CPU fixture results, not whole-game FPS.
+
+`cargo run --release --manifest-path crates/splat-engine/Cargo.toml --example collision_probe -- trompetstraat-delft /tmp/nvr-collision 6000` exercises actual floor data without a renderer. Conservative movement guards skip searches that cannot change collider residency; no radius, floor, wall or physics semantics change. `perf` → `simulation.collision_search` exposes full/reused search counts. The 6,000-update road fixture reuses 5,884 searches while retaining identical build/drop traces and final collider geometry. Timer granularity limits sub-microsecond numbers; collider creation remains the dominant cost on teleport cases. See the session document for paired evidence and limitations.

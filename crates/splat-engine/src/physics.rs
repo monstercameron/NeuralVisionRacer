@@ -156,6 +156,10 @@ impl Physics {
         self.level.as_ref().map(|l| l.generation())
     }
 
+    pub fn collision_search_profile(&self) -> Option<serde_json::Value> {
+        self.level.as_ref().map(|l| l.search_profile())
+    }
+
     /// Collision tiles built now (0 without a level).
     pub fn collision_tiles(&self) -> usize {
         self.level.as_ref().map_or(0, |l| l.tiles())

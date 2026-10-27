@@ -82,6 +82,33 @@ pub struct Output {
     pub boost_bar: f32,
 }
 
+// The spec stays publicly editable, so a cached derived value must validate all
+// inputs it depends on. Bit comparisons also detect signed-zero/NaN bit changes.
+#[derive(Debug, Clone)]
+struct PeakPowerCache {
+    idle: u32,
+    limiter: u32,
+    curve: Vec<(f32, f32)>,
+    kw: f32,
+}
+impl PeakPowerCache {
+    fn new(spec: &CarSpec) -> Self {
+        Self { idle: spec.idle_rpm.to_bits(), limiter: spec.limiter_rpm.to_bits(),
+            curve: spec.torque_curve.clone(), kw: spec.peak_power().0 }
+    }
+    fn matches(&self, spec: &CarSpec) -> bool {
+        self.idle == spec.idle_rpm.to_bits() && self.limiter == spec.limiter_rpm.to_bits()
+            && self.curve.len() == spec.torque_curve.len()
+            && self.curve.iter().zip(&spec.torque_curve).all(|(a,b)|
+                a.0.to_bits() == b.0.to_bits() && a.1.to_bits() == b.1.to_bits())
+    }
+    fn refresh(&mut self, spec: &CarSpec) {
+        self.idle = spec.idle_rpm.to_bits();self.limiter = spec.limiter_rpm.to_bits();
+        self.curve.clone_from(&spec.torque_curve);
+        self.kw = spec.peak_power().0;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Car {
     pub spec: CarSpec,
@@ -96,6 +123,7 @@ pub struct Car {
     oil_c: f32,
     boost: f32,
     last: Output,
+    peak_power: PeakPowerCache,
 }
 
 
@@ -103,7 +131,8 @@ impl Car {
     pub fn new(spec: CarSpec) -> Self {
         let rpm = spec.idle_rpm;
         let (water_c, oil_c) = (spec.start_water_c, spec.start_oil_c);
-        Self { spec, auto: true, rpm, gear: 1, shift_left: 0.0, water_c, oil_c, boost: 0.0, last: Output::default() }
+        let peak_power = PeakPowerCache::new(&spec);
+        Self { spec, auto: true, rpm, gear: 1, shift_left: 0.0, water_c, oil_c, boost: 0.0, last: Output::default(), peak_power }
     }
 
     /// The last step's output.
@@ -140,7 +169,8 @@ impl Car {
 
     /// Advances by `dt` seconds. `speed_mps` is the car's forward speed (negative when rolling backwards).
     pub fn step(&mut self, controls: Controls, speed_mps: f32, dt: f32) -> Output {
-        let spec = self.spec.clone();
+        if !self.peak_power.matches(&self.spec) { self.peak_power.refresh(&self.spec); }
+        let peak_kw = self.peak_power.kw;
         let throttle_in = controls.throttle.clamp(0.0, 1.0);
         let brake_in = controls.brake.clamp(0.0, 1.0);
         let stopped = speed_mps.abs() < STOPPED_MPS;
@@ -156,12 +186,13 @@ impl Car {
 
         // A request held across several steps shifts once: requests during a shift are ignored.
         if controls.shift != 0 && self.shift_left <= 0.0 {
-            let target = (self.gear + i32::from(controls.shift)).clamp(1, spec.ratios.len() as i32);
-            if self.gear > 0 && target != self.gear && self.rpm_in(target, speed_mps) < spec.limiter_rpm {
+            let target = (self.gear + i32::from(controls.shift)).clamp(1, self.spec.ratios.len() as i32);
+            if self.gear > 0 && target != self.gear && self.rpm_in(target, speed_mps) < self.spec.limiter_rpm {
                 self.begin_shift(target);
             }
         }
 
+        let spec = &self.spec;
         let ratio = self.ratio();
         let wheel_rpm = speed_mps.abs() / spec.driven_radius_m() * 60.0 / std::f32::consts::TAU;
         let coupled = wheel_rpm * ratio * spec.final_drive;
@@ -230,12 +261,12 @@ impl Car {
             self.auto_shift(throttle, speed_mps);
         }
 
+        let spec = &self.spec;
         let steer_angle = controls.steer.clamp(-1.0, 1.0) * spec.max_steer_rad / (1.0 + v / spec.steer_speed_mps);
 
         // Temperatures follow the engine's load (the share of peak power it is making) with a lag; oil runs hotter
         // than coolant and heats most under sustained high revs. Oil pressure rises with rpm and thins as oil heats.
         // Boost (a turbocharged spec) builds with throttle and revs, with lag.
-        let (peak_kw, _) = spec.peak_power();
         let load = (engine_torque.max(0.0) * self.rpm * std::f32::consts::TAU / 60_000.0 / peak_kw.max(1.0)).clamp(0.0, 1.0);
         let rev = (self.rpm / spec.redline_rpm).clamp(0.0, 1.1);
         let water_target = spec.water_cruise_c + spec.water_load_c * load;
@@ -355,6 +386,28 @@ pub fn straight_line(spec: &CarSpec, seconds: f32, dt: f32) -> Vec<(f32, f32, Ou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peak_power_refreshes_for_public_spec_edits_and_reset() {
+        let mut car=Car::new(CarSpec::porsche_992_gt3_rs());
+        let controls=Controls {throttle:0.85,..Default::default()};
+        for _ in 0..200 {car.step(controls,25.0,1.0/240.0);}
+        for change in 0..6 {
+            match change {
+                0=>car.spec.torque_curve[2].1+=70.0,
+                1=>car.spec.torque_curve[2].0+=25.0,
+                2=>car.spec.idle_rpm+=50.0,
+                3=>car.spec.limiter_rpm-=150.0,
+                4=>{let last=*car.spec.torque_curve.last().unwrap();car.spec.torque_curve.push((last.0+500.0,last.1+40.0));car.spec.limiter_rpm=last.0+500.0;},
+                _=>{car.spec=CarSpec::porsche_992_gt3_rs();car.reset();},
+            }
+            let mut reference=car.clone();reference.peak_power=PeakPowerCache::new(&reference.spec);
+            let direct=car.spec.peak_power().0;
+            assert_eq!(car.step(controls,25.0,1.0/240.0),reference.step(controls,25.0,1.0/240.0),"public edit {change}");
+            assert_eq!(car.peak_power.kw.to_bits(),direct.to_bits());
+            assert!(car.peak_power.matches(&car.spec));
+        }
+    }
 
     #[test]
     fn direction_keys_brake_to_rest_before_reversing_and_both_keys_only_brake() {

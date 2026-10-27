@@ -386,7 +386,7 @@ impl Engine {
 
     /// Advances the simulation one tick unless the game is paused.
     pub fn profile_json(&self)->Value {
-        let mut value=self.metrics.json();value["tire_marks"]=self.physics.tire_marks.profile_json();value["dust"]=self.physics.dust.profile_json();value["foliage"]=self.physics.foliage_profile();value["runtime"]=json!({"tick_hz":self.config.tick_hz,"substeps":self.config.physics_substeps,"bodies":self.physics.world.bodies.len(),"colliders":self.physics.world.colliders.len(),"collision_tiles":self.physics.collision_tiles(),"road_profile":self.physics.road_profile(),"paused":self.paused(),"tick":self.tick});value
+        let mut value=self.metrics.json();value["tire_marks"]=self.physics.tire_marks.profile_json();value["dust"]=self.physics.dust.profile_json();value["foliage"]=self.physics.foliage_profile();value["collision_search"]=self.physics.collision_search_profile().into();value["runtime"]=json!({"tick_hz":self.config.tick_hz,"substeps":self.config.physics_substeps,"bodies":self.physics.world.bodies.len(),"colliders":self.physics.world.colliders.len(),"collision_tiles":self.physics.collision_tiles(),"road_profile":self.physics.road_profile(),"paused":self.paused(),"tick":self.tick});value
     }
     pub fn set_profile_clock(&mut self,clock:fn()->f64){self.profile_clock=Some(clock);self.physics.tire_marks.set_clock(clock);self.physics.dust.set_clock(clock);}
     pub fn tick(&mut self) {

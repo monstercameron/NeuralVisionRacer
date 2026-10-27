@@ -65,6 +65,11 @@ pub struct LevelCollision {
     empty_tiles: std::collections::BTreeSet<(i32, i32)>,
     /// Bumped whenever tiles are built or dropped, so a debug view knows when to redraw.
     generation: u64,
+    /// Conservative movement radius within which no tile can cross a build/drop threshold.
+    search_guard: Option<([f32; 2], f32)>,
+    update_calls: u64,
+    searches: u64,
+    reused_searches: u64,
 }
 
 impl LevelCollision {
@@ -158,20 +163,43 @@ impl LevelCollision {
             tiles: BTreeMap::new(),
             empty_tiles: Default::default(),
             generation: 0,
+            search_guard: None,
+            update_calls: 0,
+            searches: 0,
+            reused_searches: 0,
         }
     }
 
     /// Builds the tiles near `centre` (world space) and drops far ones. Returns (built, dropped).
     pub fn update(&mut self, world: &mut PhysicsWorld, centre: [f32; 3]) -> (usize, usize) {
         let (cx, cz) = (centre[0] - self.origin[0], centre[2] - self.origin[2]);
+        self.update_calls += 1;
+        if let Some(([x,z], radius_sq)) = self.search_guard {
+            let (dx,dz) = (cx-x,cz-z);
+            if dx*dx + dz*dz < radius_sq {
+                self.reused_searches += 1;
+                return (0,0);
+            }
+        }
+        self.searches += 1;
         let (tile, build, keep) = (self.tile_m, self.build_m, self.keep_m);
         let reach = (build / tile).ceil() as i32 + 1;
         let (tx0, tz0) = ((cx / tile).floor() as i32, (cz / tile).floor() as i32);
         let (tiles_x, tiles_z) = (self.tiles_along(self.nx), self.tiles_along(self.nz));
+        // Tiles beyond this search square are at least one tile farther than the
+        // build radius. A half-tile cap also covers entry from outside the level.
+        let mut safe_m = tile * 0.5;
         let mut built = 0;
         for tx in (tx0 - reach).max(0)..=(tx0 + reach).min(tiles_x - 1) {
             for tz in (tz0 - reach).max(0)..=(tz0 + reach).min(tiles_z - 1) {
-                if self.tiles.contains_key(&(tx, tz)) || self.empty_tiles.contains(&(tx,tz)) || tile_distance(cx, cz, tx, tz, tile) > build {
+                if self.tiles.contains_key(&(tx, tz)) || self.empty_tiles.contains(&(tx,tz)) {
+                    continue;
+                }
+                let distance = tile_distance(cx, cz, tx, tz, tile);
+                if distance > build {
+                    // Distance to a square is 1-Lipschitz: a shorter movement
+                    // cannot bring this absent tile inside the build radius.
+                    safe_m = safe_m.min(distance-build);
                     continue;
                 }
                 if let Some(body) = self.build_tile(world, tx, tz) {
@@ -182,16 +210,33 @@ impl LevelCollision {
                 }
             }
         }
-        let far: Vec<(i32, i32)> = self.tiles.keys().filter(|&&(tx, tz)| tile_distance(cx, cz, tx, tz, tile) > keep).copied().collect();
-        for key in &far {
-            if let Some(body) = self.tiles.remove(key) {
-                world.remove_body_with_colliders(body, false);
+        let mut dropped = 0;
+        self.tiles.retain(|&(tx,tz),body| {
+            let distance = tile_distance(cx,cz,tx,tz,tile);
+            if distance > keep {
+                safe_m = safe_m.min(distance-build);
+                world.remove_body_with_colliders(*body,false);
+                dropped += 1;
+                false
+            } else {
+                safe_m = safe_m.min(keep-distance);
+                true
             }
-        }
-        if built + far.len() > 0 {
-            self.generation += 1;
-        }
-        (built, far.len())
+        });
+        // Leave a rounding margin and never reuse a non-finite calculation.
+        let tolerance = 1e-4 + f32::EPSILON * cx.abs().max(cz.abs()).max(tile) * 8.0;
+        let safe_m = (safe_m-tolerance).max(0.0);
+        self.search_guard = (cx.is_finite() && cz.is_finite() && safe_m>0.0)
+            .then_some(([cx,cz],safe_m*safe_m));
+        if built + dropped > 0 { self.generation += 1; }
+        (built, dropped)
+    }
+
+    /// Search work, separate from immutable empty tiles and actual collider changes.
+    pub fn search_profile(&self) -> serde_json::Value {
+        serde_json::json!({"updates":self.update_calls,"full_searches":self.searches,
+            "reused_searches":self.reused_searches,"guard_radius_m":self.search_guard.map_or(0.0,|(_,r)|r.sqrt()),
+            "active_tiles":self.tiles.len(),"known_empty_tiles":self.empty_tiles.len()})
     }
 
     /// Changes whenever the set of built tiles does.
@@ -457,6 +502,54 @@ fn tile_distance(x: f32, z: f32, tx: i32, tz: i32, tile: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_guard_matches_full_search_through_motion_boundaries_and_teleports() {
+        for (tile, radius) in [(2.0,4.25),(7.5,9.25),(16.0,32.0)] {
+            let mut input=level(); input.origin=[-31.5,-1.0,12.125];
+            let config=EngineConfig {level_collision_tile_m:tile,level_collision_radius_m:radius,..Default::default()};
+            let (mut guarded,mut reference)=(LevelCollision::new(&input,&config),LevelCollision::new(&input,&config));
+            let (mut a,mut b)=(PhysicsWorld::new(),PhysicsWorld::new());
+            let mut trace=Vec::new();
+            for i in 0..1800 {
+                let t=i as f32*0.007;
+                trace.push([input.origin[0]+32.0+38.0*t.sin(),0.0,input.origin[2]+32.0+38.0*(t*0.71).cos()]);
+            }
+            // Tiny movement/stationary frames should reuse a search; exact build/drop
+            // boundaries, entering the level and large jumps must always rescan.
+            trace.extend((0..120).map(|i|[0.743+(i as f32).sin()*1e-5,7.0,31.679]));
+            for k in [0.0,1.0,3.0,8.0] { for delta in [-1e-4,0.0,1e-4] {
+                trace.push([input.origin[0]+k*tile-radius+delta,0.0,input.origin[2]+0.713]);
+                trace.push([input.origin[0]+k*tile+radius*1.5+delta,0.0,input.origin[2]+0.713]);
+            }}
+            trace.extend([[-1000.0,0.0,-1000.0],[1000.0,0.0,1000.0],[0.743,0.0,31.679]]);
+            for (i,p) in trace.into_iter().enumerate() {
+                reference.search_guard=None;
+                assert_eq!(guarded.update(&mut a,p),reference.update(&mut b,p),"tile={tile} radius={radius} frame={i} point={p:?}");
+                assert_eq!(guarded.tiles.keys().collect::<Vec<_>>(),reference.tiles.keys().collect::<Vec<_>>(),"active tile set at {p:?}");
+                assert_eq!(guarded.generation,reference.generation);
+                assert_eq!((a.bodies.len(),a.colliders.len()),(b.bodies.len(),b.colliders.len()));
+                if i%127==0 {assert_eq!(guarded.debug_material_segments(&a,4),reference.debug_material_segments(&b,4));}
+            }
+            assert!(guarded.reused_searches>0,"fixture must exercise cached searches");
+            assert_eq!(guarded.update_calls,guarded.searches+guarded.reused_searches);
+        }
+    }
+
+    #[test]
+    fn empty_tile_guard_preserves_later_entry_to_occupied_region() {
+        let mut input=level();input.cells.retain(|c|c[0]>128);
+        let config=EngineConfig {level_collision_tile_m:4.0,level_collision_radius_m:5.0,..Default::default()};
+        let (mut guarded,mut reference)=(LevelCollision::new(&input,&config),LevelCollision::new(&input,&config));
+        let (mut a,mut b)=(PhysicsWorld::new(),PhysicsWorld::new());
+        for i in 0..1200 {
+            let p=[-10.0+i as f32*0.07,0.0,31.713];reference.search_guard=None;
+            assert_eq!(guarded.update(&mut a,p),reference.update(&mut b,p));
+            assert_eq!(guarded.tiles.keys().collect::<Vec<_>>(),reference.tiles.keys().collect::<Vec<_>>());
+        }
+        assert!(guarded.reused_searches>0);
+        assert_eq!(guarded.debug_material_segments(&a,4),reference.debug_material_segments(&b,4));
+    }
 
     #[test]
     fn foliage_is_sensor_only_floor_rejects_leaves_and_hard_neighbours_survive() {
