@@ -34,7 +34,13 @@ pub fn sog_v2_sh_defines(stage: Stage) -> Defines {
 /// Runtime chunks for SOG V2 with SH, as the engine's `GSplatSogResource` registers them.
 pub fn sog_v2_sh_overrides() -> Overrides {
     let mut o = Overrides::new();
-    o.insert("gsplatContainerDeclarationsVS".into(), wgsl_input_declarations(&sog_streams(true, true)));
+    // Positions already live in the shared CPU-decoded centre buffer (also used
+    // by sorting and wheel deformation). The original quantized means textures
+    // are never read by this renderer's getCenter, so do not bind them twice.
+    let streams: Vec<_> = sog_streams(true, true).into_iter()
+        .filter(|stream| !matches!(stream.name.as_str(), "means_l" | "means_u"))
+        .collect();
+    o.insert("gsplatContainerDeclarationsVS".into(), wgsl_input_declarations(&streams));
     o.insert("gsplatDeclarationsVS".into(), "#include \"gsplatContainerDeclVS\"".into());
     o.insert("gsplatReadVS".into(), "#include \"gsplatSogVS\"".into());
     const SOG: &str = include_str!("../shaders/gsplat/vert/formats/sog.wgsl");
@@ -42,6 +48,9 @@ pub fn sog_v2_sh_overrides() -> Overrides {
     let to=from+SOG[from..].find("\n}").expect("SOG center end")+2;
     let mut sog=SOG.to_string();
     sog.replace_range(from..to,"var<storage, read> splatCenters: array<f32>;\nfn getCenter() -> vec3f { let i=splat.index*3u; return vec3f(splatCenters[i],splatCenters[i+1u],splatCenters[i+2u]); }");
+    // The quantized-position decode uniforms are dead with this getter too.
+    sog = sog.replace("uniform means_mins: vec3f;", "")
+        .replace("uniform means_maxs: vec3f;", "");
     o.insert("gsplatSogVS".into(),sog);
 
     o.insert("gsplatSogSHVS".into(), sog_sh_24bit_labels());

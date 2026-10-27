@@ -319,6 +319,16 @@ impl LevelStream {
         &self.shared
     }
 
+    /// Every SH-bearing file can occupy at most one palette slot. Preserve all
+    /// slots the old device-sized texture could provide, up to the number of
+    /// files, and omit partial trailing slots that could never be used.
+    pub fn palette_texture_rows(&self, max_texture_side: u32) -> u32 {
+        let slots = POOL_CENTROID_ROWS.min(max_texture_side).saturating_sub(1) / PALETTE_ROWS;
+        let files = self.remaps.iter().flatten().filter(|r| r.meta.sh_n_count > 0)
+            .take(slots as usize).count() as u32;
+        1 + files * PALETTE_ROWS
+    }
+
     /// The level's tree.
     pub fn lod_meta(&self) -> &LodMeta {
         &self.meta
@@ -878,8 +888,6 @@ impl LevelStream {
             let span = (shared.means_maxs[c] - shared.means_mins[c]).max(f32::MIN_POSITIVE);
             ((remap.meta.means_maxs[c] - remap.meta.means_mins[c]) / span, (remap.meta.means_mins[c] - shared.means_mins[c]) / span * 65535.0)
         });
-        let mut means_l = vec![0u8; n * 4];
-        let mut means_u = vec![0u8; n * 4];
         let mut scales = vec![0u8; n * 4];
         let mut sh0 = vec![0u8; n * 4];
         let mut labels = vec![0u8; n * 4];
@@ -890,13 +898,8 @@ impl LevelStream {
             for c in 0..3 {
                 let q = f32::from(src_l[s + c]) + 256.0 * f32::from(src_u[s + c]);
                 let v = (q * factor[c].0 + factor[c].1).round().clamp(0.0, 65535.0);
-                let n16 = v as u32;
-                means_l[s + c] = (n16 & 255) as u8;
-                means_u[s + c] = (n16 >> 8) as u8;
                 centres[i][c] = sog::unlog(shared.means_mins[c] + (shared.means_maxs[c] - shared.means_mins[c]) * v / 65535.0);
             }
-            means_l[s + 3] = 255;
-            means_u[s + 3] = 255;
             scales[s..s + 4].copy_from_slice(&[remap.scales[src_s[s] as usize], remap.scales[src_s[s + 1] as usize], remap.scales[src_s[s + 2] as usize], src_s[s + 3]]);
             sh0[s..s + 4].copy_from_slice(&[remap.sh0[src_c[s] as usize], remap.sh0[src_c[s + 1] as usize], remap.sh0[src_c[s + 2] as usize], src_c[s + 3]]);
             let label = label_base.map_or(0, |base| base + u32::from(src_n[s]) + 256 * u32::from(src_n[s + 1]));
@@ -906,7 +909,7 @@ impl LevelStream {
         pool.write_splats(
             queue,
             start,
-            &[("means_l", &means_l), ("means_u", &means_u), ("quats", quats), ("scales", &scales), ("sh0", &sh0), ("sh_labels", &labels)],
+            &[("quats", quats), ("scales", &scales), ("sh0", &sh0), ("sh_labels", &labels)],
             &centres,
         );
     }
@@ -1092,6 +1095,28 @@ mod tests {
     fn stream(capacity: u32) -> LevelStream {
         let settings = StreamSettings { capacity, lod_distance_m: 12.0, lod_error_px: 0.0, behind_bias: 0, ..StreamSettings::default() };
         LevelStream::new(tree(6), &[Some(meta_json()), Some(meta_json())], settings).unwrap()
+    }
+
+    #[test]
+    fn palette_texture_preserves_reachable_slots_without_unused_rows() {
+        for sh_files in [0usize,1,2,11,15,20] {
+            let files = sh_files.max(2);
+            let mut meta = tree(6);
+            meta.filenames=(0..files).map(|i|format!("{i}/meta.json")).collect();
+            let metas:Vec<_>=(0..files).map(|i| {
+                let mut value:serde_json::Value=serde_json::from_slice(&meta_json()).unwrap();
+                if i>=sh_files {value.as_object_mut().unwrap().remove("shN");}
+                Some(serde_json::to_vec(&value).unwrap())
+            }).collect();
+            let stream=LevelStream::new(meta,&metas,StreamSettings::default()).unwrap();
+            for limit in [1024,2048,8192,16384,32768] {
+                let rows=stream.palette_texture_rows(limit);
+                let old_slots=(limit.min(POOL_CENTROID_ROWS)-1)/PALETTE_ROWS;
+                assert_eq!((rows-1)/PALETTE_ROWS,old_slots.min(sh_files as u32));
+                assert_eq!((rows-1)%PALETTE_ROWS,0);
+                assert!(rows<=limit && rows<=POOL_CENTROID_ROWS);
+            }
+        }
     }
 
     #[test]

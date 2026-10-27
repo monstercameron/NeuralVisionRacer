@@ -112,6 +112,7 @@ fn build_inner(device: &wgpu::Device, queue: &wgpu::Queue, pipelines: &Pipelines
     let textures = bundle
         .textures
         .iter()
+        .filter(|(name,_)| !matches!(**name, "means_l" | "means_u"))
         .map(|(name, tex)| (name.to_string(), upload_texture(device, queue, name, tex.width, tex.height, wgpu::TextureFormat::Rgba8Unorm, Some(&tex.rgba))))
         .collect();
     let width = bundle.textures["means_l"].width;
@@ -127,14 +128,21 @@ pub const POOL_CENTROID_ROWS: u32 = 16384;
 /// position range and codebooks every slot is encoded with; its count is ignored. Every slot starts empty: its
 /// centre is NaN, which the sort culls.
 pub fn pool(device: &wgpu::Device, queue: &wgpu::Queue, pipelines: &Pipelines, meta: &sog::Meta, capacity: u32, depth_alpha_clip: f32) -> Result<GsplatScene> {
+    pool_with_centroid_rows(device, queue, pipelines, meta, capacity, depth_alpha_clip, POOL_CENTROID_ROWS)
+}
+
+/// A pool with the same slot budget but no unused SH palette rows. `centroid_rows`
+/// includes the reserved zero row; callers retain every reachable palette slot.
+#[allow(clippy::too_many_arguments)]
+pub fn pool_with_centroid_rows(device: &wgpu::Device, queue: &wgpu::Queue, pipelines: &Pipelines, meta: &sog::Meta, capacity: u32, depth_alpha_clip: f32, centroid_rows: u32) -> Result<GsplatScene> {
     let rows = capacity.div_ceil(POOL_WIDTH);
-    let mut textures: BTreeMap<String, wgpu::Texture> = ["means_l", "means_u", "quats", "scales", "sh0", "sh_labels"]
+    let mut textures: BTreeMap<String, wgpu::Texture> = ["quats", "scales", "sh0", "sh_labels"]
         .iter()
         .map(|name| (name.to_string(), upload_texture(device, queue, name, POOL_WIDTH, rows, wgpu::TextureFormat::Rgba8Unorm, None)))
         .collect();
     textures.insert(
         "sh_centroids".into(),
-        upload_texture(device, queue, "sh_centroids", 64 * 15, POOL_CENTROID_ROWS.min(device.limits().max_texture_dimension_2d), wgpu::TextureFormat::Rgba8Unorm, None),
+        upload_texture(device, queue, "sh_centroids", 64 * 15, centroid_rows.max(1).min(POOL_CENTROID_ROWS).min(device.limits().max_texture_dimension_2d), wgpu::TextureFormat::Rgba8Unorm, None),
     );
     let meta = sog::Meta { count: rows * POOL_WIDTH, ..meta.clone() };
     let empty = vec![[f32::NAN; 3]; meta.count as usize];
@@ -260,8 +268,6 @@ fn assemble(
 
     buffers.insert("splatCenters".into(), centers.clone());
     let scene_buffers = Buffers(&buffers);
-    scene_buffers.set(queue, "means_mins", &f32s(&meta.means_mins));
-    scene_buffers.set(queue, "means_maxs", &f32s(&meta.means_maxs));
     scene_buffers.set(queue, "splatTextureSize", &u32s(&[splat_width]));
     scene_buffers.set(queue, "numSplats", &u32s(&[count]));
     scene_buffers.set(queue, "minPixelSize", &f32s(&[2.0]));
@@ -394,7 +400,7 @@ impl GsplatScene {
         }
     }
     /// Writes `centres.len()` splats into slots from `start`: one RGBA8 texel per splat for each named stream
-    /// (`means_l`, `means_u`, `quats`, `scales`, `sh0`, `sh_labels`), tightly packed, and their centres.
+    /// (`quats`, `scales`, `sh0`, `sh_labels`), tightly packed, and their shared decoded centres.
     pub fn write_splats(&self, queue: &wgpu::Queue, start: u32, streams: &[(&str, &[u8])], centres: &[[f32; 3]]) {
         self.io_metrics.borrow_mut().count("stream_splats_uploaded",centres.len() as u64);
         self.io_metrics.borrow_mut().count("stream_payload_bytes",streams.iter().map(|(_,b)|b.len() as u64).sum::<u64>()+centres.len() as u64*12);
@@ -470,7 +476,19 @@ impl GsplatScene {
 
     pub fn active_slots(&self)->u32{self.sorter.active_slots()}
     pub fn reset_profile(&self){self.io_metrics.borrow_mut().reset();self.sorter.reset_profile();}
-    pub fn profile_json(&self)->serde_json::Value {serde_json::json!({"io":self.io_metrics.borrow().json(),"sort":self.sorter.profile_json(),"shadow_proxy":self.shadow_proxy.as_ref().map(|p|serde_json::json!({"bounds_model":p.bounds,"ellipsoids_model":p.ellipsoids}))})}
+    pub fn profile_json(&self)->serde_json::Value {
+        let streams: BTreeMap<_,_> = self.textures.iter().map(|(name,texture)| {
+            let bytes = u64::from(texture.width()) * u64::from(texture.height())
+                * u64::from(texture.format().block_copy_size(None).unwrap_or(0));
+            (name,serde_json::json!({"width":texture.width(),"height":texture.height(),
+                "format":format!("{:?}",texture.format()),"logical_bytes":bytes}))
+        }).collect();
+        let bytes: u64 = streams.values().filter_map(|v|v["logical_bytes"].as_u64()).sum();
+        serde_json::json!({"io":self.io_metrics.borrow().json(),"sort":self.sorter.profile_json(),
+            "stream_textures":{"logical_bytes":bytes,"streams":streams,
+                "scope":"SOG stream textures only; excludes buffers, codebooks, frame targets and driver overhead"},
+            "shadow_proxy":self.shadow_proxy.as_ref().map(|p|serde_json::json!({"bounds_model":p.bounds,"ellipsoids_model":p.ellipsoids}))})
+    }
     /// Slots in this scene.
     pub fn capacity(&self) -> u32 {
         self.count

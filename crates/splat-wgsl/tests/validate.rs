@@ -45,6 +45,9 @@ fn car_lighting_clarity_and_centres_fit_portable_webgpu_storage_limits() {
     use splat_wgsl::binding::BindingKind;
     let (_,_,bindings)=splat_wgsl::pipeline::compose_pipeline().unwrap();
     assert!(bindings.iter().filter(|b|matches!(b.kind,BindingKind::Storage{..})).count()<=8);
+    assert!(bindings.iter().any(|b|b.name=="splatCenters"));
+    assert!(!bindings.iter().any(|b|matches!(b.name.as_str(),"means_l"|"means_u"|"means_mins"|"means_maxs")),
+        "rendering must use the same shared positions as sorting and wheel deformation");
     for stage in [Stage::Vertex, Stage::Fragment] {
         let (_, stage_bindings) = compose_gsplat(stage).unwrap();
         assert!(stage_bindings.iter().filter(|b|matches!(b.kind,BindingKind::Uniform{..})).count()<=12);

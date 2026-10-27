@@ -544,7 +544,8 @@ impl Frame {
 
     /// Switches the level to streaming: an empty GPU pool sized for `stream`, filled as `stream_level` runs.
     pub fn start_level_stream(&mut self, stream: &mut crate::stream::LevelStream) -> Result<(), String> {
-        let pool = scene::pool(&self.device, &self.queue, &self.pipelines, stream.shared_meta(), stream.settings.capacity, LEVEL_DEPTH_ALPHA)
+        let rows = stream.palette_texture_rows(self.device.limits().max_texture_dimension_2d);
+        let pool = scene::pool_with_centroid_rows(&self.device, &self.queue, &self.pipelines, stream.shared_meta(), stream.settings.capacity, LEVEL_DEPTH_ALPHA, rows)
             .map_err(|e| format!("build level pool: {e}"))?;
         stream.init_pool(&pool, &self.queue);
         self.level = vec![pool];

@@ -138,3 +138,10 @@ Depth prepasses reject splats below their unchanged opacity cutoff before covari
 DOF retains its 16-tap spiral but folds fixed tap geometry at shader creation. `web/dof-validation.html` compares production source against `logs/depth-prepass-reference/dof.wgsl` with real browser GPU timestamps and full pixel readback: two runs were byte-identical, with mixed-depth medians 0.459 → 0.393 ms and wide-blur 0.590 → 0.459 ms. Save a fresh preimage before another experiment with `python3 scripts/save_browser_baseline.py --name depth-prepass-reference` (explicit `--replace` only when deliberately discarding an existing comparison).
 
 `cargo run --release --manifest-path crates/splat-render/Cargo.toml --example metrics_probe -- 100000 4` checks CPU-only profiler bookkeeping throughput/allocations and hashes the final summary. Borrowed existing keys remove per-update String allocations while retaining exact summaries. This fixture is separate from game FPS.
+
+
+### Shared positions and streamed texture memory
+
+The renderer draws and sorts decoded centres from one storage buffer, so it no longer keeps duplicate means_l/means_u GPU textures or uploads those per-splat byte arrays. Original source downloads and shared-range quantization remain unchanged. SH palette allocation preserves all reachable slots while omitting unusable/unused rows. `perf` → `scene_metrics` → `stream_textures` reports logical texture bytes and excludes unrelated GPU resources/driver overhead.
+
+Settled streaming browser comparisons were byte-identical with unchanged requests, residents and LOD counts. Saburi saves 48.9 MB of nominal car+level stream textures; Delft saves 73.1 MB. Per-splat GPU upload payload is 28 instead of 36 bytes per uploaded splat (22.2% less). FPS gains are not established. `web/benchmark.html?stream=1` exercises production streaming with deterministic settling; `build=snapshot&snapshot=<saved-name>` compares a named retained package.
