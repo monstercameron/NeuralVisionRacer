@@ -123,7 +123,9 @@ pub fn decode_stream(stream: &str, bytes: &[u8]) -> Result<Texture> {
     }
     let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::WebP)
         .map_err(|e| format!("decoding {stream}: {e}"))?
-        .to_rgba8();
+        // Most SOG streams already decode to RGBA. Consume that image instead of
+        // cloning its whole pixel buffer; RGB WebPs still use the same conversion.
+        .into_rgba8();
     let (width, height) = decoded.dimensions();
     let mut rgba = decoded.into_raw();
     if stream == "sh_labels" {
@@ -368,6 +370,56 @@ fn codebook(value: &serde_json::Value) -> Result<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The previous conversion is retained here to check dimensions, every
+    // pixel byte, label normalization and error messages against the new path.
+    fn decode_stream_reference(stream: &str, bytes: &[u8]) -> Result<Texture> {
+        if bytes.is_empty() && is_sh_stream(stream) {
+            return Ok(Texture { width: 0, height: 0, rgba: Vec::new() });
+        }
+        let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::WebP)
+            .map_err(|e| format!("decoding {stream}: {e}"))?
+            .to_rgba8();
+        let (width, height) = decoded.dimensions();
+        let mut rgba = decoded.into_raw();
+        if stream == "sh_labels" {
+            rgba.chunks_exact_mut(4).for_each(|t| t[2] = 0);
+        }
+        Ok(Texture { width, height, rgba })
+    }
+
+    #[test]
+    fn webp_conversion_matches_reference_for_rgb_rgba_and_errors() {
+        use image::ExtendedColorType;
+
+        let rgb = [0, 1, 255, 128, 17, 44, 90, 91, 92, 255, 128, 0, 11, 99, 180, 12, 15, 16];
+        let rgba = [0, 1, 255, 0, 128, 17, 44, 1, 90, 91, 92, 127, 255, 128, 0, 128, 11, 99, 180, 254, 12, 15, 16, 255];
+        for (pixels, color) in [(rgb.as_slice(), ExtendedColorType::Rgb8), (rgba.as_slice(), ExtendedColorType::Rgba8)] {
+            let mut webp = Vec::new();
+            image::codecs::webp::WebPEncoder::new_lossless(&mut webp).encode(pixels, 3, 2, color).unwrap();
+            for stream in ["means_l", "sh_labels", "sh_centroids"] {
+                let old = decode_stream_reference(stream, &webp).unwrap();
+                let new = decode_stream(stream, &webp).unwrap();
+                assert_eq!((new.width, new.height), (old.width, old.height));
+                assert_eq!(new.rgba, old.rgba, "{stream}, {color:?}");
+                if stream == "sh_labels" {
+                    assert!(new.rgba.chunks_exact(4).all(|pixel| pixel[2] == 0));
+                }
+            }
+
+            for stream in ["means_l", "sh_labels"] {
+                for malformed in [&[][..], &webp[..4], &webp[..webp.len() / 2]] {
+                    let old = decode_stream_reference(stream, malformed);
+                    let new = decode_stream(stream, malformed);
+                    match (old, new) {
+                        (Ok(a), Ok(b)) => assert_eq!((a.width, a.height, a.rgba), (b.width, b.height, b.rgba)),
+                        (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
+                        _ => panic!("different error behavior for {stream} and {} bytes", malformed.len()),
+                    }
+                }
+            }
+        }
+    }
 
     /// A bundle of `n` splats along x from `lo` to `hi` metres, each with its own centroid label.
     fn line(n: u32, lo: f32, hi: f32, codebook_shift: f32) -> Bundle {

@@ -162,6 +162,15 @@ struct LeafState {
     coarsen_since: Option<f32>,
 }
 
+/// One in-range leaf competing for the pool. Keeping its priority here avoids recomputing it in every comparison.
+struct SelectionCandidate {
+    leaf: usize,
+    target: usize,
+    coarse: usize,
+    priority: f32,
+    visible: bool,
+}
+
 struct Chunk {
     bundle: Bundle,
     last_used: u64,
@@ -180,11 +189,15 @@ pub struct LevelStream {
     meta: LodMeta,
     shared: Meta,
     remaps: Vec<Option<Remap>>,
+    /// Shared-quantized coordinate decoding, initialized on the first upload.
+    centre_lookup: CentreLookup,
     /// Codebook index of 0 in the shared SH codebook: the reserved centroid's texels.
     sh_zero: u8,
     chunks: BTreeMap<usize, Chunk>,
     in_flight: BTreeSet<usize>,
     leaves: Vec<LeafState>,
+    /// Reused each frame; sorted by visibility and priority, with leaf order breaking equal-priority ties.
+    selection: Vec<SelectionCandidate>,
     free: Vec<(u32, u32)>,
     /// Palette slot → (chunk file, leaves using it).
     palettes: Vec<Option<(usize, u32)>>,
@@ -259,6 +272,7 @@ impl LevelStream {
             .collect();
         let coarsest = meta.levels().saturating_sub(1);
         let leaves = meta.leaves.iter().map(|_| LeafState { want: Some(coarsest), have: None, distance: f32::MAX, visible: true, coarsen_since: None }).collect();
+        let selection = Vec::with_capacity(meta.leaves.len());
         // Sized for the largest centroid texture; `init_pool` fits it to the pool's.
         let palettes = vec![None; ((POOL_CENTROID_ROWS - 1) / PALETTE_ROWS) as usize];
         let spacing = meta
@@ -277,10 +291,12 @@ impl LevelStream {
             meta,
             shared,
             remaps,
+            centre_lookup: CentreLookup::Uninitialized,
             sh_zero: zero as u8,
             chunks: BTreeMap::new(),
             in_flight: BTreeSet::new(),
             leaves,
+            selection,
             palettes,
             distance_scale: 1.0,
             frame: 0,
@@ -344,24 +360,50 @@ impl LevelStream {
     pub fn select(&mut self, eye: [f32; 3], forward: [f32; 3], clip: Option<&[f32; 16]>, now_s: f32) {
         self.frame += 1;
         self.now = now_s;
-        let keep_s = self.settings.keep_s;
-        let count = |leaf: &crate::lod::Leaf, lod: usize| u64::from(leaf.lods[lod].map_or(0, |r| r.count));
+        let budget = self.prepare_selection(eye, forward, clip, now_s);
+        let (budget, refined) = self.refine_selection(budget);
+        self.sharp_m = self
+            .leaves
+            .iter()
+            .filter(|s| s.visible && s.want.is_some_and(|w| w >= 2))
+            .map(|s| s.distance)
+            .fold(f32::MAX, f32::min);
+        // How much of the configured detail the pool allowed: the share of leaves that got their distance's LOD.
+        let selected = self.selection.len();
+        self.distance_scale = if selected == 0 { 1.0 } else { refined as f32 / selected as f32 };
+        // When the pool cannot hold every leaf's target, leaves at the edge of the budget trade detail back and forth
+        // as the camera moves. Shrinking the LOD distance until the targets fit makes them stable again (the
+        // hysteresis and keep delay then hold); spare room lets it grow back. Slowly, so it does not oscillate.
+        // Between "a few leaves short" and "15 % of the pool spare" it holds still, so it settles instead of hunting.
+        // Crossfades cut short for room count as a shortage too: the selection must leave them space.
+        let short = (selected - refined) * 50 > selected || std::mem::take(&mut self.squeezed);
+        let spare = budget > i64::from(self.settings.capacity) * 15 / 100;
+        self.detail_scale = if short {
+            (self.detail_scale * 0.99).max(0.25)
+        } else if spare {
+            (self.detail_scale * 1.003).min(1.0)
+        } else {
+            self.detail_scale
+        };
+        self.started = true;
+    }
+
+    /// Gather each eligible leaf's target and pay for its coarsest LOD. This computes distance and priority once.
+    fn prepare_selection(&mut self, eye: [f32; 3], forward: [f32; 3], clip: Option<&[f32; 16]>, now_s: f32) -> i64 {
         let planes = clip.map(|c| (frustum_planes(c, ENTER_MARGIN), frustum_planes(c, LEAVE_MARGIN)));
         let mut budget = i64::from(self.settings.capacity) * SELECT_SHARE / 100;
-        let mut targets = vec![None; self.leaves.len()];
-        let levels: Vec<f32> = (0..self.leaves.len())
-            .map(|i| {
-                let leaf = &self.meta.leaves[i];
-                self.level_at(i, effective_distance(eye, leaf.min, leaf.max))
-            })
-            .collect();
+        self.selection.clear();
         for (i, (state, leaf)) in self.leaves.iter_mut().zip(&self.meta.leaves).enumerate() {
             let distance = effective_distance(eye, leaf.min, leaf.max);
             state.distance = distance;
             if distance > self.settings.max_distance_m {
+                state.want = None;
                 continue;
             }
-            let Some(coarse) = coarsest_available(&leaf.lods) else { continue };
+            let Some(coarse) = coarsest_available(&leaf.lods) else {
+                state.want = None;
+                continue;
+            };
             // In view: inside the frustum (entering by the narrow margin, leaving by the wide one), or without one, not
             // entirely behind the camera. Leaves near the camera always count.
             state.visible = distance <= self.settings.any_view_m || match &planes {
@@ -372,79 +414,53 @@ impl LevelStream {
                     (0..3).map(|i| (centre[i] - eye[i]) * forward[i]).sum::<f32>() >= -radius
                 }
             };
-            // Continuous level (`level_at`), plus the bias out of view. The bias goes in before the hysteresis, so both
-            // compare the same level.
+            // Apply the out-of-view bias before hysteresis, so both compare the same level.
             let bias = if state.visible { 0.0 } else { self.settings.behind_bias as f32 };
-            let x = levels[i] + bias;
+            let x = level_at_values(&self.spacing, &self.settings, self.detail_scale, self.focal_px, i, distance) + bias;
             let mut lod = x.floor() as usize;
-            // Hysteresis: keep the resident LOD while within a fifth of a level of its band.
             if let Some(have) = state.have {
                 if x > have.lod as f32 - 0.2 && x < have.lod as f32 + 1.2 {
                     lod = have.lod;
                 }
             }
-            // Going coarser waits `keep_s`: the leaf may be back in view, or the budget back, by then.
             match state.have {
                 Some(have) if lod > have.lod => {
                     let since = *state.coarsen_since.get_or_insert(now_s);
-                    if now_s - since < keep_s {
+                    if now_s - since < self.settings.keep_s {
                         lod = have.lod;
                     }
                 }
                 _ => state.coarsen_since = None,
             }
-            targets[i] = Some((lod.min(coarse), coarse));
-            budget -= count(leaf, coarse) as i64;
+            let target = lod.min(coarse);
+            let settled = state.have.is_some_and(|h| h.lod <= target);
+            self.selection.push(SelectionCandidate {
+                leaf: i, target, coarse, priority: distance * if settled { STICKY } else { 1.0 }, visible: state.visible,
+            });
+            budget -= leaf_count(leaf, coarse);
         }
-        let mut order: Vec<usize> = (0..self.leaves.len()).filter(|&i| targets[i].is_some()).collect();
-        // Leaves in view first, then nearest, a leaf already at its target LOD counting as nearer.
-        let priority = |i: usize| {
-            let state = &self.leaves[i];
-            let settled = state.have.is_some_and(|h| targets[i].is_some_and(|(t, _)| h.lod <= t));
-            state.distance * if settled { STICKY } else { 1.0 }
-        };
-        order.sort_by(|&a, &b| self.leaves[b].visible.cmp(&self.leaves[a].visible).then(priority(a).total_cmp(&priority(b))));
-        for &i in &order {
-            let (target, coarse) = targets[i].expect("filtered");
-            let leaf = &self.meta.leaves[i];
-            let base = count(leaf, coarse) as i64;
-            // The finest LOD from the target down that exists and fits what is left.
-            let chosen = (target..=coarse)
+        budget
+    }
+
+    /// Spend the remaining pool on in-view leaves first, then by sticky distance, preserving leaf order on ties.
+    fn refine_selection(&mut self, mut budget: i64) -> (i64, usize) {
+        // The original stable sort kept equal priorities in leaf order. Including the unique index yields the same
+        // total order without allocating a temporary sort buffer.
+        self.selection.sort_unstable_by(|a, b| b.visible.cmp(&a.visible)
+            .then(a.priority.total_cmp(&b.priority)).then(a.leaf.cmp(&b.leaf)));
+        let mut refined = 0;
+        for candidate in &self.selection {
+            let leaf = &self.meta.leaves[candidate.leaf];
+            let base = leaf_count(leaf, candidate.coarse);
+            let chosen = (candidate.target..=candidate.coarse)
                 .filter(|&l| leaf.lods[l].is_some())
-                .find(|&l| count(leaf, l) as i64 - base <= budget)
-                .unwrap_or(coarse);
-            budget -= count(leaf, chosen) as i64 - base;
-            self.leaves[i].want = Some(chosen);
+                .find(|&l| leaf_count(leaf, l) - base <= budget)
+                .unwrap_or(candidate.coarse);
+            budget -= leaf_count(leaf, chosen) - base;
+            self.leaves[candidate.leaf].want = Some(chosen);
+            refined += usize::from(chosen == candidate.target);
         }
-        for (i, state) in self.leaves.iter_mut().enumerate() {
-            if targets[i].is_none() {
-                state.want = None;
-            }
-        }
-        self.sharp_m = self
-            .leaves
-            .iter()
-            .filter(|s| s.visible && s.want.is_some_and(|w| w >= 2))
-            .map(|s| s.distance)
-            .fold(f32::MAX, f32::min);
-        // How much of the configured detail the pool allowed: the share of leaves that got their distance's LOD.
-        let refined = order.iter().filter(|&&i| self.leaves[i].want == targets[i].map(|t| t.0)).count();
-        self.distance_scale = if order.is_empty() { 1.0 } else { refined as f32 / order.len() as f32 };
-        // When the pool cannot hold every leaf's target, leaves at the edge of the budget trade detail back and forth
-        // as the camera moves. Shrinking the LOD distance until the targets fit makes them stable again (the
-        // hysteresis and keep delay then hold); spare room lets it grow back. Slowly, so it does not oscillate.
-        // Between "a few leaves short" and "15 % of the pool spare" it holds still, so it settles instead of hunting.
-        // Crossfades cut short for room count as a shortage too: the selection must leave them space.
-        let short = (order.len() - refined) * 50 > order.len() || std::mem::take(&mut self.squeezed);
-        let spare = budget > i64::from(self.settings.capacity) * 15 / 100;
-        self.detail_scale = if short {
-            (self.detail_scale * 0.99).max(0.25)
-        } else if spare {
-            (self.detail_scale * 1.003).min(1.0)
-        } else {
-            self.detail_scale
-        };
-        self.started = true;
+        (budget, refined)
     }
 
     /// Chunk files to fetch now, as (file index, chunk folder), marked as in flight. Leaves with nothing resident ask
@@ -718,26 +734,7 @@ impl LevelStream {
     /// `lod_error_px` apart, interpolated between levels (2.3 is 30 % of the way from LOD 2 to LOD 3); by distance
     /// bands, 0 inside d0, 1 at 2·d0, 2 at 4·d0.
     fn level_at(&self, leaf: usize, distance: f32) -> f32 {
-        let error_px = self.settings.lod_error_px;
-        if error_px <= 0.0 {
-            let d0 = (self.settings.lod_distance_m * self.detail_scale).max(0.1);
-            return if distance <= d0 { 0.0 } else { (distance / d0).log2() + 1.0 };
-        }
-        // A smaller budget allows a larger error.
-        let target = error_px / self.detail_scale;
-        let error = |l: usize| self.spacing[leaf][l] * self.focal_px / distance.max(0.05);
-        let levels = self.spacing[leaf].len();
-        if error(0) >= target {
-            return 0.0;
-        }
-        for l in 0..levels.saturating_sub(1) {
-            let (a, b) = (error(l), error(l + 1));
-            if b > target {
-                // Between l (fine enough) and l + 1 (too coarse): how far in log space.
-                return l as f32 + ((target / a).ln() / (b / a).max(1.0001).ln()).clamp(0.0, 0.999);
-            }
-        }
-        (levels - 1) as f32
+        level_at_values(&self.spacing, &self.settings, self.detail_scale, self.focal_px, leaf, distance)
     }
 
     /// Checks the pool bookkeeping: resident and fading ranges never overlap each other or the free list, and
@@ -875,42 +872,18 @@ impl LevelStream {
     }
 
     /// Re-encodes a leaf range from its chunk into the shared format and writes it at `start`.
-    fn upload(&self, pool: &GsplatScene, queue: &wgpu::Queue, range: Range, start: u32, palette: Option<usize>) {
+    fn upload(&mut self, pool: &GsplatScene, queue: &wgpu::Queue, range: Range, start: u32, palette: Option<usize>) {
         let (Some(chunk), Some(remap)) = (self.chunks.get(&range.file), self.remaps[range.file].as_ref()) else { return };
-        let b = &chunk.bundle;
-        let n = range.count as usize;
-        let (first, last) = (range.offset as usize * 4, (range.offset as usize + n) * 4);
-        let src = |name: &str| &b.textures[name].rgba[first..last.min(b.textures[name].rgba.len())];
-        let (src_l, src_u, src_s, src_c, src_n) = (src("means_l"), src("means_u"), src("scales"), src("sh0"), src("sh_labels"));
-        let shared = &self.shared;
-        // Per axis: chunk value v = lo + span·q/65535 (log space), re-quantised against the shared range.
-        let factor = [0, 1, 2].map(|c| {
-            let span = (shared.means_maxs[c] - shared.means_mins[c]).max(f32::MIN_POSITIVE);
-            ((remap.meta.means_maxs[c] - remap.meta.means_mins[c]) / span, (remap.meta.means_mins[c] - shared.means_mins[c]) / span * 65535.0)
-        });
-        let mut scales = vec![0u8; n * 4];
-        let mut sh0 = vec![0u8; n * 4];
-        let mut labels = vec![0u8; n * 4];
-        let mut centres = vec![[0.0f32; 3]; n];
-        let label_base = palette.map(|p| 64 + p as u32 * PALETTE_CENTROIDS);
-        for i in 0..n.min(src_l.len() / 4) {
-            let s = i * 4;
-            for c in 0..3 {
-                let q = f32::from(src_l[s + c]) + 256.0 * f32::from(src_u[s + c]);
-                let v = (q * factor[c].0 + factor[c].1).round().clamp(0.0, 65535.0);
-                centres[i][c] = sog::unlog(shared.means_mins[c] + (shared.means_maxs[c] - shared.means_mins[c]) * v / 65535.0);
-            }
-            scales[s..s + 4].copy_from_slice(&[remap.scales[src_s[s] as usize], remap.scales[src_s[s + 1] as usize], remap.scales[src_s[s + 2] as usize], src_s[s + 3]]);
-            sh0[s..s + 4].copy_from_slice(&[remap.sh0[src_c[s] as usize], remap.sh0[src_c[s + 1] as usize], remap.sh0[src_c[s + 2] as usize], src_c[s + 3]]);
-            let label = label_base.map_or(0, |base| base + u32::from(src_n[s]) + 256 * u32::from(src_n[s + 1]));
-            labels[s..s + 4].copy_from_slice(&[(label & 255) as u8, ((label >> 8) & 255) as u8, (label >> 16) as u8, 255]);
-        }
-        let quats = src("quats");
+        let lookup = self.centre_lookup.for_upload(&self.shared);
+        let encoded = encode_upload(&chunk.bundle, remap, &self.shared, range, palette, lookup);
+        let first = range.offset as usize * 4;
+        let last = (range.offset as usize + range.count as usize) * 4;
+        let quats = &chunk.bundle.textures["quats"].rgba[first..last.min(chunk.bundle.textures["quats"].rgba.len())];
         pool.write_splats(
             queue,
             start,
-            &[("quats", quats), ("scales", &scales), ("sh0", &sh0), ("sh_labels", &labels)],
-            &centres,
+            &[("quats", quats), ("scales", &encoded.scales), ("sh0", &encoded.sh0), ("sh_labels", &encoded.labels)],
+            &encoded.centres,
         );
     }
 
@@ -1014,6 +987,114 @@ impl LevelStream {
     }
 }
 
+/// A shared range never changes after stream creation. Build its exact 16-bit decoded centres once, only when a
+/// range is actually uploaded. Invalid ranges keep the original direct calculation.
+enum CentreLookup {
+    Uninitialized,
+    Direct,
+    Table([Vec<f32>; 3]),
+}
+
+impl CentreLookup {
+    fn for_upload(&mut self, shared: &Meta) -> Option<&[Vec<f32>; 3]> {
+        if matches!(self, Self::Uninitialized) {
+            *self = make_centre_lookup(shared).map_or(Self::Direct, Self::Table);
+        }
+        match self {
+            Self::Table(table) => Some(table),
+            Self::Direct => None,
+            Self::Uninitialized => unreachable!(),
+        }
+    }
+}
+
+fn direct_shared_centre(shared: &Meta, axis: usize, value: f32) -> f32 {
+    sog::unlog(shared.means_mins[axis] + (shared.means_maxs[axis] - shared.means_mins[axis]) * value / 65535.0)
+}
+
+fn make_centre_lookup(shared: &Meta) -> Option<[Vec<f32>; 3]> {
+    if (0..3).any(|c| !shared.means_mins[c].is_finite() || !shared.means_maxs[c].is_finite()
+        || !(shared.means_maxs[c] - shared.means_mins[c]).is_finite()) {
+        return None;
+    }
+    Some([0, 1, 2].map(|c| (0..=u16::MAX).map(|value| direct_shared_centre(shared, c, f32::from(value))).collect()))
+}
+
+fn decoded_shared_centre(shared: &Meta, axis: usize, value: f32, lookup: Option<&[Vec<f32>; 3]>) -> f32 {
+    // Round/clamp above produces integral values in 0..=65535, except for NaN or negative zero. The bit check also
+    // keeps those edge cases on the original expression, including its zero sign and NaN behavior.
+    if let Some(table) = lookup.filter(|_| value.to_bits() <= 65535.0f32.to_bits()) {
+        table[axis][value as usize]
+    } else {
+        direct_shared_centre(shared, axis, value)
+    }
+}
+
+struct EncodedUpload {
+    centres: Vec<[f32; 3]>,
+    scales: Vec<u8>,
+    sh0: Vec<u8>,
+    labels: Vec<u8>,
+}
+
+/// CPU preparation for a pool upload, separated from the GPU write so it can be checked and profiled independently.
+fn encode_upload(b: &Bundle, remap: &Remap, shared: &Meta, range: Range, palette: Option<usize>, lookup: Option<&[Vec<f32>; 3]>) -> EncodedUpload {
+    let n = range.count as usize;
+    let (first, last) = (range.offset as usize * 4, (range.offset as usize + n) * 4);
+    let src = |name: &str| &b.textures[name].rgba[first..last.min(b.textures[name].rgba.len())];
+    let (src_l, src_u, src_s, src_c, src_n) = (src("means_l"), src("means_u"), src("scales"), src("sh0"), src("sh_labels"));
+    // Per axis: chunk value v = lo + span·q/65535 (log space), re-quantised against the shared range.
+    let factor = [0, 1, 2].map(|c| {
+        let span = (shared.means_maxs[c] - shared.means_mins[c]).max(f32::MIN_POSITIVE);
+        ((remap.meta.means_maxs[c] - remap.meta.means_mins[c]) / span, (remap.meta.means_mins[c] - shared.means_mins[c]) / span * 65535.0)
+    });
+    let mut encoded = EncodedUpload {
+        scales: vec![0u8; n * 4], sh0: vec![0u8; n * 4], labels: vec![0u8; n * 4], centres: vec![[0.0f32; 3]; n],
+    };
+    let label_base = palette.map(|p| 64 + p as u32 * PALETTE_CENTROIDS);
+    for i in 0..n.min(src_l.len() / 4) {
+        let s = i * 4;
+        for c in 0..3 {
+            let q = f32::from(src_l[s + c]) + 256.0 * f32::from(src_u[s + c]);
+            let v = (q * factor[c].0 + factor[c].1).round().clamp(0.0, 65535.0);
+            encoded.centres[i][c] = decoded_shared_centre(shared, c, v, lookup);
+        }
+        encoded.scales[s..s + 4].copy_from_slice(&[remap.scales[src_s[s] as usize], remap.scales[src_s[s + 1] as usize], remap.scales[src_s[s + 2] as usize], src_s[s + 3]]);
+        encoded.sh0[s..s + 4].copy_from_slice(&[remap.sh0[src_c[s] as usize], remap.sh0[src_c[s + 1] as usize], remap.sh0[src_c[s + 2] as usize], src_c[s + 3]]);
+        let label = label_base.map_or(0, |base| base + u32::from(src_n[s]) + 256 * u32::from(src_n[s + 1]));
+        encoded.labels[s..s + 4].copy_from_slice(&[(label & 255) as u8, ((label >> 8) & 255) as u8, (label >> 16) as u8, 255]);
+    }
+    encoded
+}
+
+/// Evaluate a level using the same settings in selection and prefetch, without borrowing the whole stream.
+fn level_at_values(spacing: &[Vec<f32>], settings: &StreamSettings, detail_scale: f32, focal_px: f32, leaf: usize, distance: f32) -> f32 {
+    let error_px = settings.lod_error_px;
+    if error_px <= 0.0 {
+        let d0 = (settings.lod_distance_m * detail_scale).max(0.1);
+        return if distance <= d0 { 0.0 } else { (distance / d0).log2() + 1.0 };
+    }
+    // A smaller budget allows a larger error.
+    let target = error_px / detail_scale;
+    let error = |l: usize| spacing[leaf][l] * focal_px / distance.max(0.05);
+    let levels = spacing[leaf].len();
+    if error(0) >= target {
+        return 0.0;
+    }
+    for l in 0..levels.saturating_sub(1) {
+        let (a, b) = (error(l), error(l + 1));
+        if b > target {
+            // Between l (fine enough) and l + 1 (too coarse): how far in log space.
+            return l as f32 + ((target / a).ln() / (b / a).max(1.0001).ln()).clamp(0.0, 0.999);
+        }
+    }
+    (levels - 1) as f32
+}
+
+fn leaf_count(leaf: &crate::lod::Leaf, lod: usize) -> i64 {
+    i64::from(leaf.lods[lod].map_or(0, |range| range.count))
+}
+
 /// How far a leaf's splats are from `p`, for choosing its detail: the distance to the nearest point of its box. A
 /// long leaf (a facade down a street) is seen up close at its near end, so that end decides its detail; measuring to
 /// its middle instead showed the near end of long walls coarse.
@@ -1095,6 +1176,342 @@ mod tests {
     fn stream(capacity: u32) -> LevelStream {
         let settings = StreamSettings { capacity, lod_distance_m: 12.0, lod_error_px: 0.0, behind_bias: 0, ..StreamSettings::default() };
         LevelStream::new(tree(6), &[Some(meta_json()), Some(meta_json())], settings).unwrap()
+    }
+
+    // Retained pre-optimization selection and level calculations. Comparing the full private state exercises
+    // resident ranges, keep-delay and frustum hysteresis without needing a graphics device.
+    impl LevelStream {
+        fn select_reference(&mut self, eye: [f32; 3], forward: [f32; 3], clip: Option<&[f32; 16]>, now_s: f32) {
+            self.frame += 1;
+            self.now = now_s;
+            let keep_s = self.settings.keep_s;
+            let count = |leaf: &crate::lod::Leaf, lod: usize| u64::from(leaf.lods[lod].map_or(0, |r| r.count));
+            let planes = clip.map(|c| (frustum_planes(c, ENTER_MARGIN), frustum_planes(c, LEAVE_MARGIN)));
+            let mut budget = i64::from(self.settings.capacity) * SELECT_SHARE / 100;
+            let mut targets = vec![None; self.leaves.len()];
+            let levels: Vec<f32> = (0..self.leaves.len())
+                .map(|i| {
+                    let leaf = &self.meta.leaves[i];
+                    self.level_at_reference(i, effective_distance(eye, leaf.min, leaf.max))
+                })
+                .collect();
+            for (i, (state, leaf)) in self.leaves.iter_mut().zip(&self.meta.leaves).enumerate() {
+                let distance = effective_distance(eye, leaf.min, leaf.max);
+                state.distance = distance;
+                if distance > self.settings.max_distance_m {
+                    continue;
+                }
+                let Some(coarse) = coarsest_available(&leaf.lods) else { continue };
+                // In view: inside the frustum (entering by the narrow margin, leaving by the wide one), or without one, not
+                // entirely behind the camera. Leaves near the camera always count.
+                state.visible = distance <= self.settings.any_view_m || match &planes {
+                    Some((enter, leave)) => box_in_frustum(if state.visible { leave } else { enter }, leaf.min, leaf.max),
+                    None => {
+                        let centre = [0, 1, 2].map(|i| (leaf.min[i] + leaf.max[i]) * 0.5);
+                        let radius = (0..3).map(|i| (leaf.max[i] - leaf.min[i]).powi(2)).sum::<f32>().sqrt() * 0.5;
+                        (0..3).map(|i| (centre[i] - eye[i]) * forward[i]).sum::<f32>() >= -radius
+                    }
+                };
+                // Continuous level (`level_at`), plus the bias out of view. The bias goes in before the hysteresis, so both
+                // compare the same level.
+                let bias = if state.visible { 0.0 } else { self.settings.behind_bias as f32 };
+                let x = levels[i] + bias;
+                let mut lod = x.floor() as usize;
+                // Hysteresis: keep the resident LOD while within a fifth of a level of its band.
+                if let Some(have) = state.have {
+                    if x > have.lod as f32 - 0.2 && x < have.lod as f32 + 1.2 {
+                        lod = have.lod;
+                    }
+                }
+                // Going coarser waits `keep_s`: the leaf may be back in view, or the budget back, by then.
+                match state.have {
+                    Some(have) if lod > have.lod => {
+                        let since = *state.coarsen_since.get_or_insert(now_s);
+                        if now_s - since < keep_s {
+                            lod = have.lod;
+                        }
+                    }
+                    _ => state.coarsen_since = None,
+                }
+                targets[i] = Some((lod.min(coarse), coarse));
+                budget -= count(leaf, coarse) as i64;
+            }
+            let mut order: Vec<usize> = (0..self.leaves.len()).filter(|&i| targets[i].is_some()).collect();
+            // Leaves in view first, then nearest, a leaf already at its target LOD counting as nearer.
+            let priority = |i: usize| {
+                let state = &self.leaves[i];
+                let settled = state.have.is_some_and(|h| targets[i].is_some_and(|(t, _)| h.lod <= t));
+                state.distance * if settled { STICKY } else { 1.0 }
+            };
+            order.sort_by(|&a, &b| self.leaves[b].visible.cmp(&self.leaves[a].visible).then(priority(a).total_cmp(&priority(b))));
+            for &i in &order {
+                let (target, coarse) = targets[i].expect("filtered");
+                let leaf = &self.meta.leaves[i];
+                let base = count(leaf, coarse) as i64;
+                // The finest LOD from the target down that exists and fits what is left.
+                let chosen = (target..=coarse)
+                    .filter(|&l| leaf.lods[l].is_some())
+                    .find(|&l| count(leaf, l) as i64 - base <= budget)
+                    .unwrap_or(coarse);
+                budget -= count(leaf, chosen) as i64 - base;
+                self.leaves[i].want = Some(chosen);
+            }
+            for (i, state) in self.leaves.iter_mut().enumerate() {
+                if targets[i].is_none() {
+                    state.want = None;
+                }
+            }
+            self.sharp_m = self
+                .leaves
+                .iter()
+                .filter(|s| s.visible && s.want.is_some_and(|w| w >= 2))
+                .map(|s| s.distance)
+                .fold(f32::MAX, f32::min);
+            // How much of the configured detail the pool allowed: the share of leaves that got their distance's LOD.
+            let refined = order.iter().filter(|&&i| self.leaves[i].want == targets[i].map(|t| t.0)).count();
+            self.distance_scale = if order.is_empty() { 1.0 } else { refined as f32 / order.len() as f32 };
+            // When the pool cannot hold every leaf's target, leaves at the edge of the budget trade detail back and forth
+            // as the camera moves. Shrinking the LOD distance until the targets fit makes them stable again (the
+            // hysteresis and keep delay then hold); spare room lets it grow back. Slowly, so it does not oscillate.
+            // Between "a few leaves short" and "15 % of the pool spare" it holds still, so it settles instead of hunting.
+            // Crossfades cut short for room count as a shortage too: the selection must leave them space.
+            let short = (order.len() - refined) * 50 > order.len() || std::mem::take(&mut self.squeezed);
+            let spare = budget > i64::from(self.settings.capacity) * 15 / 100;
+            self.detail_scale = if short {
+                (self.detail_scale * 0.99).max(0.25)
+            } else if spare {
+                (self.detail_scale * 1.003).min(1.0)
+            } else {
+                self.detail_scale
+            };
+            self.started = true;
+        }
+
+        fn level_at_reference(&self, leaf: usize, distance: f32) -> f32 {
+            let error_px = self.settings.lod_error_px;
+            if error_px <= 0.0 {
+                let d0 = (self.settings.lod_distance_m * self.detail_scale).max(0.1);
+                return if distance <= d0 { 0.0 } else { (distance / d0).log2() + 1.0 };
+            }
+            // A smaller budget allows a larger error.
+            let target = error_px / self.detail_scale;
+            let error = |l: usize| self.spacing[leaf][l] * self.focal_px / distance.max(0.05);
+            let levels = self.spacing[leaf].len();
+            if error(0) >= target {
+                return 0.0;
+            }
+            for l in 0..levels.saturating_sub(1) {
+                let (a, b) = (error(l), error(l + 1));
+                if b > target {
+                    // Between l (fine enough) and l + 1 (too coarse): how far in log space.
+                    return l as f32 + ((target / a).ln() / (b / a).max(1.0001).ln()).clamp(0.0, 0.999);
+                }
+            }
+            (levels - 1) as f32
+        }
+
+    }
+
+    #[test]
+    fn shared_centre_lookup_preserves_quantized_values_and_edge_cases() {
+        let s = stream(10_000);
+        let mut shared = s.shared.clone();
+        shared.means_mins = [-8.0, -0.0, -7.25];
+        shared.means_maxs = [7.0, 0.0, 4.5];
+        let table = make_centre_lookup(&shared).unwrap();
+        for axis in 0..3 {
+            for value in 0..=u16::MAX {
+                let value = f32::from(value);
+                assert_eq!(decoded_shared_centre(&shared, axis, value, Some(&table)).to_bits(), direct_shared_centre(&shared, axis, value).to_bits(), "axis {axis}, value {value}");
+            }
+            for value in [-0.0, f32::INFINITY, f32::NEG_INFINITY, f32::from_bits(0x7fc0_1234)] {
+                assert_eq!(decoded_shared_centre(&shared, axis, value, Some(&table)).to_bits(), direct_shared_centre(&shared, axis, value).to_bits());
+            }
+        }
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bad = shared.clone();
+            bad.means_mins[1] = invalid;
+            assert!(make_centre_lookup(&bad).is_none());
+        }
+        let mut overflowing = shared.clone();
+        overflowing.means_mins[0] = -f32::MAX;
+        overflowing.means_maxs[0] = f32::MAX;
+        assert!(make_centre_lookup(&overflowing).is_none());
+    }
+
+    #[test]
+    fn shared_centre_lookup_preserves_all_encoded_upload_bytes() {
+        let s = stream(10_000);
+        let remap = s.remaps[0].as_ref().unwrap();
+        let count = 4099usize;
+        let mut textures = BTreeMap::new();
+        for (stream, seed) in [("means_l", 1u32), ("means_u", 2), ("scales", 3), ("sh0", 4), ("sh_labels", 5)] {
+            let mut state = seed;
+            let bytes = (0..count * 4).map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            }).collect();
+            textures.insert(stream, sog::Texture { width: count as u32, height: 1, rgba: bytes });
+        }
+        let bundle = Bundle { meta: remap.meta.clone(), textures };
+        let table = make_centre_lookup(&s.shared).unwrap();
+        for palette in [None, Some(0), Some(5)] {
+            let range = Range { file: 0, offset: 3, count: (count - 3) as u32 };
+            let direct = encode_upload(&bundle, remap, &s.shared, range, palette, None);
+            let candidate = encode_upload(&bundle, remap, &s.shared, range, palette, Some(&table));
+            assert_eq!(direct.scales, candidate.scales);
+            assert_eq!(direct.sh0, candidate.sh0);
+            assert_eq!(direct.labels, candidate.labels);
+            for (a, b) in direct.centres.iter().zip(&candidate.centres) {
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+            }
+        }
+    }
+
+    /// Run only in a reserved CPU timing slot:
+    /// `cargo test --release --lib lod_upload_cpu_probe -- --ignored --nocapture --test-threads=1`.
+    /// Set LOD_UPLOAD_REVERSE=1 to reverse reference/candidate order. No graphics device is created.
+    #[test]
+    #[ignore]
+    fn lod_upload_cpu_probe() {
+        use std::{hint::black_box, path::PathBuf, time::Instant};
+
+        fn fingerprint(
+            bundle: &Bundle, remap: &Remap, shared: &Meta, ranges: &[Range], lookup: Option<&[Vec<f32>; 3]>,
+        ) -> u64 {
+            let mut hash = 14_695_981_039_346_656_037u64;
+            let mut add = |bytes: &[u8]| for &byte in bytes {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211);
+            };
+            for &range in ranges {
+                let encoded = encode_upload(bundle, remap, shared, range, Some(1), lookup);
+                for centre in encoded.centres { for value in centre { add(&value.to_bits().to_le_bytes()); } }
+                add(&encoded.scales);
+                add(&encoded.sh0);
+                add(&encoded.labels);
+            }
+            hash
+        }
+
+        let dir = std::env::var_os("LOD_UPLOAD_LEVEL").map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/levels/saburi-alley-yazd")
+        });
+        let meta = LodMeta::parse(&std::fs::read(dir.join("lod-meta.json")).unwrap()).unwrap();
+        let metas: Vec<Option<Vec<u8>>> = meta.filenames.iter().map(|f| std::fs::read(dir.join(f)).ok()).collect();
+        let file = meta.filenames.iter().position(|f| f == "0_0/meta.json").expect("0_0 chunk");
+        let mut ranges: Vec<Range> = meta.leaves.iter().filter_map(|leaf| leaf.lods.first().copied().flatten())
+            .filter(|r| r.file == file && r.count > 0).collect();
+        ranges.sort_by_key(|r| r.offset);
+        let stream = LevelStream::new(meta, &metas, StreamSettings::default()).unwrap();
+        let bundle = sog::load_dir(&dir.join(stream.meta.dir_of(file).unwrap())).unwrap();
+        let remap = stream.remaps[file].as_ref().unwrap();
+        let shared = &stream.shared;
+        let one = vec![*ranges.first().expect("LOD 0 ranges")];
+        let mut batch = Vec::new();
+        let mut count = 0u64;
+        for range in ranges {
+            count += u64::from(range.count);
+            batch.push(range);
+            if count >= 200_000 { break; }
+        }
+        assert!(count >= 200_000);
+        let cases = [("first-leaf", one.as_slice(), 20usize), ("200k-batch", batch.as_slice(), 1usize)];
+        let reverse = std::env::var_os("LOD_UPLOAD_REVERSE").is_some();
+        for round in 0..4 {
+            let start = Instant::now();
+            let table = make_centre_lookup(shared).expect("finite shared range");
+            let init_ns = start.elapsed().as_nanos();
+            for (case, ranges, repetitions) in cases {
+                let direct_hash = fingerprint(&bundle, remap, shared, ranges, None);
+                let lookup_hash = fingerprint(&bundle, remap, shared, ranges, Some(&table));
+                assert_eq!(direct_hash, lookup_hash, "{case} encoded data differs");
+                let mut times = [0u128; 2];
+                for index in if reverse { [1usize, 0] } else { [0usize, 1] } {
+                    let lookup = if index == 0 { None } else { Some(black_box(&table)) };
+                    let start = Instant::now();
+                    for _ in 0..repetitions {
+                        for &range in ranges {
+                            black_box(encode_upload(black_box(&bundle), black_box(remap), black_box(shared), range, Some(1), black_box(lookup)));
+                        }
+                    }
+                    times[index] = start.elapsed().as_nanos() / repetitions as u128;
+                }
+                let splats: u64 = ranges.iter().map(|r| u64::from(r.count)).sum();
+                println!("{{\"case\":\"{case}\",\"round\":{round},\"ranges\":{},\"splats\":{splats},\"lookup_init_ns\":{init_ns},\"direct_ns\":{},\"lookup_ns\":{},\"fingerprint\":\"{direct_hash:016x}\"}}", ranges.len(), times[0], times[1]);
+            }
+        }
+    }
+
+    #[test]
+    fn selection_matches_reference_with_residents_and_boundaries() {
+        let json = include_bytes!("../../../docs/levels/saburi-alley-yazd/lod-meta.json");
+        let mut meta = LodMeta::parse(json).unwrap();
+        // Cover equal priorities, absent intermediate levels and leaves with no available range.
+        meta.leaves[1] = meta.leaves[0].clone();
+        for (i, leaf) in meta.leaves.iter_mut().enumerate() {
+            if i % 29 == 0 { leaf.lods[0] = None; }
+            if i % 47 == 0 { leaf.lods[2] = None; }
+            if i % 113 == 0 { leaf.lods.fill(None); }
+        }
+        let metas = vec![Some(meta_json()); meta.filenames.len()];
+        let settings = StreamSettings::default();
+        let mut reference = LevelStream::new(meta.clone(), &metas, settings).unwrap();
+        let mut candidate = LevelStream::new(meta.clone(), &metas, settings).unwrap();
+        let projection = crate::camera::perspective(60.0f32.to_radians(), 16.0 / 9.0, 0.05, 2000.0);
+        let distances = [0.0, 7.999, 8.0, 8.001, 23.999, 24.0, 24.001, 47.999, 48.0, 48.001, 149.999, 150.0, 150.001];
+        for frame in 0..1040 {
+            let leaf = &meta.leaves[(frame / distances.len()) % meta.leaves.len()];
+            let eye = [leaf.min[0] - distances[frame % distances.len()], (leaf.min[1] + leaf.max[1]) * 0.5, (leaf.min[2] + leaf.max[2]) * 0.5];
+            let angle = (frame as f32 * 0.071).sin() * std::f32::consts::PI;
+            let forward = [angle.cos(), 0.0, angle.sin()];
+            let target = [eye[0] + forward[0], eye[1], eye[2] + forward[2]];
+            let view = crate::camera::look_at(eye, target, [0.0, 1.0, 0.0]);
+            let clip = crate::camera::mul(&projection, &view);
+            let clip = (frame % 3 != 0).then_some(&clip);
+            let capacity = [120_000, 500_000, 1_500_000, 3_000_000][(frame / 23) % 4];
+            let error = [0.0, 0.2, 1.5, 3.0][(frame / 41) % 4];
+            let focal = [350.0, 935.3074, 1600.0][(frame / 61) % 3];
+            for stream in [&mut reference, &mut candidate] {
+                stream.settings.capacity = capacity;
+                stream.settings.lod_error_px = error;
+                stream.settings.max_distance_m = [80.0, 150.0, 250.0][(frame / 71) % 3];
+                stream.set_focal_px(focal);
+                if frame % 31 == 0 { stream.squeezed = true; }
+            }
+            let now = frame as f32 / 60.0;
+            reference.select_reference(eye, forward, clip, now);
+            candidate.select(eye, forward, clip, now);
+            assert_eq!(reference.frame, candidate.frame, "frame {frame}");
+            assert_eq!(reference.now.to_bits(), candidate.now.to_bits(), "frame {frame}");
+            assert_eq!(reference.started, candidate.started, "frame {frame}");
+            assert_eq!(reference.squeezed, candidate.squeezed, "frame {frame}");
+            assert_eq!(reference.detail_scale.to_bits(), candidate.detail_scale.to_bits(), "frame {frame}");
+            assert_eq!(reference.distance_scale.to_bits(), candidate.distance_scale.to_bits(), "frame {frame}");
+            assert_eq!(reference.sharp_m.to_bits(), candidate.sharp_m.to_bits(), "frame {frame}");
+            for (i, (a, b)) in reference.leaves.iter().zip(&candidate.leaves).enumerate() {
+                assert_eq!(a.want, b.want, "frame {frame}, leaf {i}");
+                assert_eq!(a.visible, b.visible, "frame {frame}, leaf {i}");
+                assert_eq!(a.distance.to_bits(), b.distance.to_bits(), "frame {frame}, leaf {i}");
+                assert_eq!(a.coarsen_since.map(f32::to_bits), b.coarsen_since.map(f32::to_bits), "frame {frame}, leaf {i}");
+            }
+            if frame % 7 == 0 {
+                let a = reference.requests();
+                let b = candidate.requests();
+                assert_eq!(a, b, "request order at frame {frame}");
+                for (file, _) in a { reference.failed(file); candidate.failed(file); }
+            }
+            // CPU-only simulated arrivals let resident LODs catch up at different times, exercising hysteresis and
+            // sticky prioritization. They do not represent GPU upload throughput or rendered pixels.
+            for i in 0..meta.leaves.len() {
+                if (i + frame) % 7 == 0 {
+                    let resident = candidate.leaves[i].want.map(|lod| Resident {
+                        lod, start: i as u32 * 100, count: meta.leaves[i].lods[lod].unwrap().count, palette: None, born: now,
+                    });
+                    reference.leaves[i].have = resident;
+                    candidate.leaves[i].have = resident;
+                }
+            }
+        }
     }
 
     #[test]

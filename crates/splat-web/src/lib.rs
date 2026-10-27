@@ -132,9 +132,10 @@ impl Viewer {
         self.frame.set_cutout(car_cutout(&self.engine));
         self.frame.set_lod_focus(lod_focus(&self.engine));
         apply_effects(&self.engine, &mut self.frame, (now_ms / 1000.0) as f32);
-        let (mut decoded, mut streamed) = (clock_ms(), clock_ms());
+        let setup_done = clock_ms();
+        let (mut decoded, mut streamed) = (setup_done, setup_done);
         if let Some(stream) = self.stream.as_mut() {
-            decode_step(&mut self.decoding, stream);
+            decode_step(&mut self.decoding, stream, &mut self.metrics);
             decoded = clock_ms();
             self.frame.stream_level(stream, &view, (now_ms / 1000.0) as f32);
             streamed = clock_ms();
@@ -157,6 +158,8 @@ impl Viewer {
         let done = clock_ms();
         self.timings = [ticked - started, decoded - ticked, streamed - decoded, drawn_prep - streamed, done - drawn_prep, done - started];
         for (name,ms) in ["ticks","setup_decode","stream_upload","hud_debug","encode_submit","frame_cpu_total"].into_iter().zip(self.timings){self.metrics.record(name,ms);}
+        self.metrics.record("frame_setup", setup_done - ticked);
+        self.metrics.record("decode_stage", decoded - setup_done);
         self.metrics.count("render_attempts",1);self.metrics.count("simulation_ticks",self.engine.tick-ticks_before);
         if self.profile_logging && Level::Info>=self.engine.log.min_level() && now_ms-self.last_profile_log>=1000.0 {self.engine.log.metrics(self.engine.tick,"perf",self.profile_json());self.last_profile_log=now_ms;}
 
@@ -415,16 +418,45 @@ struct PendingChunk {
 }
 
 /// Decodes the next texture of the oldest pending chunk; a chunk with all its textures goes to the stream.
-fn decode_step(decoding: &mut std::collections::VecDeque<PendingChunk>, stream: &mut splat_render::stream::LevelStream) {
+fn decode_step(
+    decoding: &mut std::collections::VecDeque<PendingChunk>,
+    stream: &mut splat_render::stream::LevelStream,
+    metrics: &mut splat_render::metrics::Metrics,
+) {
+    // Record only actual decode attempts in these sparse series, so idle frames
+    // do not hide the cost of the individual streams in their percentiles.
     let Some(chunk) = decoding.front_mut() else { return };
     let index = chunk.textures.len();
     let (name, _) = sog::streams()[index];
-    match sog::decode_stream(name, &chunk.files[index]) {
+    let timing = match name {
+        "means_l" => "decode_means_l",
+        "means_u" => "decode_means_u",
+        "quats" => "decode_quats",
+        "scales" => "decode_scales",
+        "sh0" => "decode_sh0",
+        "sh_labels" => "decode_sh_labels",
+        "sh_centroids" => "decode_sh_centroids",
+        _ => "decode_other",
+    };
+    let started = clock_ms();
+    let decoded = sog::decode_stream(name, &chunk.files[index]);
+    let elapsed = clock_ms() - started;
+    if chunk.files[index].is_empty() && sog::is_sh_stream(name) {
+        // Missing optional SH files are placeholders, not WebP decode samples.
+        metrics.count("decode_empty_sh_streams", 1);
+    } else {
+        metrics.record(timing, elapsed);
+    }
+    metrics.count("decode_attempts", 1);
+    metrics.count("decode_input_bytes", chunk.files[index].len() as u64);
+    match decoded {
         Ok(texture) => {
+            metrics.count("decode_output_bytes", texture.rgba.len() as u64);
             chunk.textures.insert(name, texture);
             chunk.files[index] = Vec::new();
         }
         Err(error) => {
+            metrics.count("decode_failures", 1);
             web_sys::console::warn_1(&format!("level chunk {}: {error}", chunk.file).into());
             stream.failed(chunk.file);
             decoding.pop_front();
