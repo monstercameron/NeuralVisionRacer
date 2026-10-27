@@ -253,3 +253,6 @@ mod portal_binding_tests {
         }
     }
 }
+
+/// Checked staging for the opt-in browser worker experiment.
+pub mod worker_decode;

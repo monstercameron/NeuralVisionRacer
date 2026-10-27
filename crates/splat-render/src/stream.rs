@@ -39,6 +39,9 @@ use std::collections::{BTreeMap, BTreeSet};
 const PALETTE_CENTROIDS: u32 = 65536;
 const PALETTE_ROWS: u32 = PALETTE_CENTROIDS / 64;
 const SH_COEFFS: usize = 15;
+const LAYOUT_HASH_OFFSET: u64 = 0xcbf29ce484222325;
+const LAYOUT_HASH_PRIME: u64 = 0x100000001b3;
+const MAX_LAYOUT_ALLOCATION_EVENTS: usize = 4096;
 
 /// Every RGB channel in the reserved row decodes through the shared codebook to +0.0.
 fn zero_sh_centroid_row(sh_zero: u8) -> Vec<u8> {
@@ -143,7 +146,132 @@ pub struct StreamStats {
     pub detail_scale: f32,
 }
 
-impl StreamStats { pub fn json(&self)->serde_json::Value { serde_json::json!({"resident_splats":self.resident_splats,"wanted_splats":self.wanted_splats,"active_slots":self.active_slots,"leaves_per_lod":self.leaves_per_lod,"leaves_empty":self.leaves_empty,"leaves_hidden":self.leaves_hidden,"leaves_pending":self.leaves_pending,"chunks_loaded":self.chunks_loaded,"chunks_in_flight":self.chunks_in_flight,"leaves_visible":self.leaves_visible,"fading":self.fading,"switches":self.switches,"near_switches":self.near_switches,"palettes_in_use":self.palettes_in_use,"missing_sh":self.missing_sh,"fades_cut":self.fades_cut,"hard_swaps":self.hard_swaps,"detail_met":self.detail_met,"detail_scale":self.detail_scale}) } }
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResidentRangeLayout {
+    pub leaf: usize,
+    pub file: usize,
+    pub lod: usize,
+    pub source_offset: u32,
+    pub count: u32,
+    pub pool_start: u32,
+    pub palette: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutAllocationEvent {
+    pub frame: u64,
+    pub time_s: f32,
+    pub leaf: usize,
+    pub file: usize,
+    pub lod: usize,
+    pub source_offset: u32,
+    pub count: u32,
+    pub pool_start: u32,
+    pub palette: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamLayoutDiagnostics {
+    pub enabled_from_frame: u64,
+    pub resident_fingerprint: String,
+    pub allocation_fingerprint: String,
+    pub allocation_count: u64,
+    pub allocation_events_dropped: u64,
+    pub resident_ranges: Vec<ResidentRangeLayout>,
+    pub allocation_history: Vec<LayoutAllocationEvent>,
+}
+
+impl StreamLayoutDiagnostics {
+    pub fn json(&self) -> serde_json::Value {
+        let resident_ranges = self.resident_ranges.iter().map(|r| serde_json::json!({
+            "leaf": r.leaf, "file": r.file, "lod": r.lod, "source_offset": r.source_offset,
+            "count": r.count, "pool_start": r.pool_start, "palette": r.palette,
+        })).collect::<Vec<_>>();
+        let allocation_history = self.allocation_history.iter().map(|e| serde_json::json!({
+            "frame": e.frame, "time_s": e.time_s, "leaf": e.leaf, "file": e.file,
+            "lod": e.lod, "source_offset": e.source_offset, "count": e.count,
+            "pool_start": e.pool_start, "palette": e.palette,
+        })).collect::<Vec<_>>();
+        serde_json::json!({
+            "enabled_from_frame": self.enabled_from_frame,
+            "resident_mapping_scope": "current_leaf_residents_excluding_fading_out",
+            "resident_fingerprint": self.resident_fingerprint,
+            "allocation_fingerprint": self.allocation_fingerprint,
+            "allocation_count": self.allocation_count,
+            "allocation_events_dropped": self.allocation_events_dropped,
+            "resident_ranges": resident_ranges,
+            "allocation_history": allocation_history,
+        })
+    }
+}
+
+impl StreamStats {
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "resident_splats": self.resident_splats,
+            "wanted_splats": self.wanted_splats,
+            "active_slots": self.active_slots,
+            "leaves_per_lod": self.leaves_per_lod,
+            "leaves_empty": self.leaves_empty,
+            "leaves_hidden": self.leaves_hidden,
+            "leaves_pending": self.leaves_pending,
+            "chunks_loaded": self.chunks_loaded,
+            "chunks_in_flight": self.chunks_in_flight,
+            "leaves_visible": self.leaves_visible,
+            "fading": self.fading,
+            "switches": self.switches,
+            "near_switches": self.near_switches,
+            "palettes_in_use": self.palettes_in_use,
+            "missing_sh": self.missing_sh,
+            "fades_cut": self.fades_cut,
+            "hard_swaps": self.hard_swaps,
+            "detail_met": self.detail_met,
+            "detail_scale": self.detail_scale,
+        })
+    }
+}
+
+fn hash_layout_value(hash: &mut u64, value: u64) {
+    for byte in value.to_le_bytes() {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(LAYOUT_HASH_PRIME);
+    }
+}
+
+fn hash_resident_layout(entries: &[ResidentRangeLayout]) -> u64 {
+    let mut hash = LAYOUT_HASH_OFFSET;
+    hash_layout_value(&mut hash, entries.len() as u64);
+    for entry in entries {
+        for value in [
+            entry.leaf as u64,
+            entry.file as u64,
+            entry.lod as u64,
+            u64::from(entry.source_offset),
+            u64::from(entry.count),
+            u64::from(entry.pool_start),
+            entry.palette.map_or(u64::MAX, |palette| palette as u64),
+        ] {
+            hash_layout_value(&mut hash, value);
+        }
+    }
+    hash
+}
+
+fn hash_allocation_event(hash: &mut u64, event: &LayoutAllocationEvent) {
+    for value in [
+        event.frame,
+        u64::from(event.time_s.to_bits()),
+        event.leaf as u64,
+        event.file as u64,
+        event.lod as u64,
+        u64::from(event.source_offset),
+        u64::from(event.count),
+        u64::from(event.pool_start),
+        event.palette.map_or(u64::MAX, |palette| palette as u64),
+    ] {
+        hash_layout_value(hash, value);
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Resident {
@@ -232,6 +360,13 @@ pub struct LevelStream {
     /// `lod_distance_m` scaled to what the pool holds: shrinks while leaves miss their target for lack of room and
     /// grows back while room is spare, slowly either way.
     detail_scale: f32,
+    /// Optional diagnostic allocation trace. Disabled in ordinary runs to avoid retaining per-upload records.
+    layout_diagnostics_enabled: bool,
+    layout_enabled_from_frame: u64,
+    layout_allocation_fingerprint: u64,
+    layout_allocation_count: u64,
+    layout_allocation_events_dropped: u64,
+    layout_allocation_history: Vec<LayoutAllocationEvent>,
 }
 
 impl LevelStream {
@@ -318,6 +453,12 @@ impl LevelStream {
             spacing,
             focal_px: 1000.0,
             sharp_m: f32::MAX,
+            layout_diagnostics_enabled: false,
+            layout_enabled_from_frame: 0,
+            layout_allocation_fingerprint: LAYOUT_HASH_OFFSET,
+            layout_allocation_count: 0,
+            layout_allocation_events_dropped: 0,
+            layout_allocation_history: Vec::new(),
         })
     }
 
@@ -533,6 +674,11 @@ impl LevelStream {
         out
     }
 
+    /// Whether fetched metadata matches the metadata used to construct this stream's remapping.
+    pub fn accepts_chunk_meta(&self, file: usize, meta: &Meta) -> bool {
+        self.remaps.get(file).and_then(Option::as_ref).is_some_and(|r| &r.meta == meta)
+    }
+
     /// A requested chunk file arrived.
     pub fn insert(&mut self, file: usize, bundle: Bundle) {
         self.in_flight.remove(&file);
@@ -655,6 +801,7 @@ impl LevelStream {
                 self.retire(pool, queue, old);
             }
             self.leaves[i].have = Some(Resident { lod, start, count: range.count, palette, born: now });
+            self.record_layout_allocation(i, lod, range, start, palette);
             if let Some(chunk) = self.chunks.get_mut(&range.file) {
                 chunk.last_used = self.frame;
             }
@@ -879,6 +1026,76 @@ impl LevelStream {
         }
     }
 
+    /// Enables or clears diagnostic fingerprints/traces without changing selection or allocation behavior.
+    /// Call before streaming arrivals to capture the full allocation history.
+    pub fn set_layout_diagnostics(&mut self, enabled: bool) {
+        self.layout_diagnostics_enabled = enabled;
+        self.layout_enabled_from_frame = self.frame;
+        self.layout_allocation_fingerprint = LAYOUT_HASH_OFFSET;
+        self.layout_allocation_count = 0;
+        self.layout_allocation_events_dropped = 0;
+        self.layout_allocation_history.clear();
+        if enabled {
+            self.layout_allocation_history.reserve(MAX_LAYOUT_ALLOCATION_EVENTS.min(self.leaves.len() * 4));
+        }
+    }
+
+    /// Returns a snapshot only when diagnostics were explicitly enabled. The resident mapping covers each leaf's
+    /// current range and excludes ranges still fading out.
+    pub fn layout_diagnostics(&self) -> Option<StreamLayoutDiagnostics> {
+        self.layout_diagnostics_enabled.then(|| self.layout_diagnostics_snapshot())
+    }
+
+    fn layout_diagnostics_snapshot(&self) -> StreamLayoutDiagnostics {
+        let resident_ranges: Vec<_> = self.leaves.iter().enumerate().filter_map(|(leaf, state)| {
+            let have = state.have?;
+            let range = self.meta.leaves.get(leaf)?.lods.get(have.lod)?.as_ref()?;
+            Some(ResidentRangeLayout {
+                leaf,
+                file: range.file,
+                lod: have.lod,
+                source_offset: range.offset,
+                count: have.count,
+                pool_start: have.start,
+                palette: have.palette,
+            })
+        }).collect();
+        let resident_fingerprint = format!("{:016x}", hash_resident_layout(&resident_ranges));
+        StreamLayoutDiagnostics {
+            enabled_from_frame: self.layout_enabled_from_frame,
+            resident_fingerprint,
+            allocation_fingerprint: format!("{:016x}", self.layout_allocation_fingerprint),
+            allocation_count: self.layout_allocation_count,
+            allocation_events_dropped: self.layout_allocation_events_dropped,
+            resident_ranges,
+            allocation_history: self.layout_allocation_history.clone(),
+        }
+    }
+
+    fn record_layout_allocation(&mut self, leaf: usize, lod: usize, range: Range, start: u32, palette: Option<usize>) {
+        if !self.layout_diagnostics_enabled {
+            return;
+        }
+        let event = LayoutAllocationEvent {
+            frame: self.frame,
+            time_s: self.now,
+            leaf,
+            file: range.file,
+            lod,
+            source_offset: range.offset,
+            count: range.count,
+            pool_start: start,
+            palette,
+        };
+        hash_allocation_event(&mut self.layout_allocation_fingerprint, &event);
+        self.layout_allocation_count += 1;
+        if self.layout_allocation_history.len() < MAX_LAYOUT_ALLOCATION_EVENTS {
+            self.layout_allocation_history.push(event);
+        } else {
+            self.layout_allocation_events_dropped += 1;
+        }
+    }
+
     /// Re-encodes a leaf range from its chunk into the shared format and writes it at `start`.
     fn upload(&mut self, pool: &GsplatScene, queue: &wgpu::Queue, range: Range, start: u32, palette: Option<usize>) {
         let (Some(chunk), Some(remap)) = (self.chunks.get(&range.file), self.remaps[range.file].as_ref()) else { return };
@@ -977,6 +1194,11 @@ impl LevelStream {
 
     /// Drops chunks no pending upload needs, keeping the `cache_chunks` most recently used.
     fn evict(&mut self) {
+        // Even if every chunk were idle, none could be removed while the whole cache fits.
+        // Avoid building the needed/prefetch sets and sorting on the common settled path.
+        if self.chunks.len() <= self.settings.cache_chunks {
+            return;
+        }
         let mut needed = BTreeSet::new();
         for (state, leaf) in self.leaves.iter().zip(&self.meta.leaves) {
             if let Some(want) = state.want.filter(|&w| state.have.is_none_or(|h| h.lod != w)) {
@@ -1717,6 +1939,68 @@ mod tests {
         s.select([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], None, 0.0);
         let shown = s.leaves.iter().filter(|l| l.want.is_some()).count();
         assert_eq!(shown, 3, "leaves at 0, 10 and 20 m are within 25 m; 30 m and beyond are hidden");
+    }
+
+    #[test]
+    fn eviction_keeps_cached_and_needed_chunks_at_cache_boundary() {
+        let mut s = stream(10_000);
+        s.settings.cache_chunks = 2;
+        for file in 0..2 {
+            let bundle = Bundle { meta: s.remaps[file].as_ref().unwrap().meta.clone(), textures: BTreeMap::new() };
+            s.chunks.insert(file, Chunk { bundle, last_used: file as u64 });
+        }
+        s.evict();
+        assert_eq!(s.chunks.keys().copied().collect::<Vec<_>>(), vec![0, 1]);
+        // Above the boundary, a pending wanted chunk is protected and the oldest idle chunk goes.
+        s.settings.cache_chunks = 0;
+        for leaf in &mut s.leaves { leaf.want = None; }
+        s.leaves[0].want = Some(0);
+        s.evict();
+        assert_eq!(s.chunks.keys().copied().collect::<Vec<_>>(), vec![0]);
+    }
+
+    #[test]
+    fn layout_diagnostics_are_opt_in_and_separate_final_mapping_from_allocation_order() {
+        let mut first = stream(10_000);
+        assert!(first.layout_diagnostics().is_none());
+        assert!(first.stats().json().get("layout_diagnostics").is_none());
+        first.set_layout_diagnostics(true);
+        first.frame = 5;
+        first.now = 0.25;
+
+        let a = first.meta.leaves[0].lods[0].unwrap();
+        let b = first.meta.leaves[1].lods[1].unwrap();
+        first.leaves[0].have = Some(Resident { lod: 0, start: 120, count: a.count, palette: Some(2), born: 0.0 });
+        first.leaves[1].have = Some(Resident { lod: 1, start: 20, count: b.count, palette: None, born: 0.0 });
+        first.fading_out.push((Resident { lod: 1, start: 500, count: b.count, palette: None, born: 0.0 }, 0.2));
+        first.record_layout_allocation(0, 0, a, 120, Some(2));
+        first.record_layout_allocation(1, 1, b, 20, None);
+        assert!(first.stats().json().get("layout_diagnostics").is_none());
+
+        let mut second = stream(10_000);
+        second.set_layout_diagnostics(true);
+        second.frame = 5;
+        second.now = 0.25;
+        let a = second.meta.leaves[0].lods[0].unwrap();
+        let b = second.meta.leaves[1].lods[1].unwrap();
+        second.leaves[0].have = Some(Resident { lod: 0, start: 120, count: a.count, palette: Some(2), born: 0.0 });
+        second.leaves[1].have = Some(Resident { lod: 1, start: 20, count: b.count, palette: None, born: 0.0 });
+        second.record_layout_allocation(1, 1, b, 20, None);
+        second.record_layout_allocation(0, 0, a, 120, Some(2));
+        assert!(second.stats().json().get("layout_diagnostics").is_none(), "enabled diagnostics do not leak into routine stats");
+
+        let first = first.layout_diagnostics().unwrap();
+        let second = second.layout_diagnostics().unwrap();
+        assert_eq!(first.resident_fingerprint, second.resident_fingerprint);
+        assert_eq!(first.resident_ranges, second.resident_ranges);
+        assert_eq!(first.resident_ranges.len(), 2, "fading-out ranges are outside the current leaf mapping snapshot");
+        assert_ne!(first.allocation_fingerprint, second.allocation_fingerprint);
+        assert_ne!(first.allocation_history, second.allocation_history);
+        assert_eq!(first.allocation_count, 2);
+        assert_eq!(first.allocation_history[0].leaf, 0);
+        assert_eq!(first.allocation_history[1].leaf, 1);
+        assert!(first.json().get("resident_ranges").is_some());
+        assert_eq!(first.json()["resident_mapping_scope"], "current_leaf_residents_excluding_fading_out");
     }
 
     #[test]

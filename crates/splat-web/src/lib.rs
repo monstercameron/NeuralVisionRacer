@@ -11,6 +11,22 @@ use splat_render::frame::Frame;
 use splat_render::sog;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
+use splat_render::worker_decode;
+
+/// One scalar-decoded texture, exported for the opt-in worker experiment.
+#[wasm_bindgen]
+pub struct WorkerTexture { inner: sog::Texture }
+#[wasm_bindgen]
+impl WorkerTexture {
+    pub fn width(&self) -> u32 { self.inner.width }
+    pub fn height(&self) -> u32 { self.inner.height }
+    pub fn take_pixels(&mut self) -> Vec<u8> { std::mem::take(&mut self.inner.rgba) }
+}
+#[wasm_bindgen]
+pub fn worker_decode_texture(index: usize, bytes: Vec<u8>) -> Result<WorkerTexture, JsValue> {
+    let name = sog::streams().get(index).ok_or_else(|| JsValue::from_str("unknown texture"))?.0;
+    Ok(WorkerTexture { inner: sog::decode_stream(name, &bytes).map_err(js_error)? })
+}
 
 /// The running game: the engine, its frame, and the clock that turns animation frames into ticks.
 #[wasm_bindgen]
@@ -24,6 +40,7 @@ pub struct Viewer {
     /// Chunks received but not yet decoded. One texture is decoded per frame, so a chunk never stalls a frame for
     /// the whole decode (the browser build has no threads).
     decoding: std::collections::VecDeque<PendingChunk>,
+    worker_chunk: Option<worker_decode::StagedChunk>,
     /// The dashboard drawn over the frame (`hud.*`; built-in designs only in the browser).
     hud: Option<splat_hud::HudRenderer>,
     wheel_rig: Option<splat_engine::wheel_visual::WheelRig>,
@@ -104,7 +121,7 @@ impl Viewer {
 
         // Loaded whether or not it is shown, so `hud.enabled` (the H key) toggles it live.
         let hud = hud_design(&engine.config).map(splat_hud::HudRenderer::new).ok();
-        Ok(Viewer { engine, frame, level_chunks: Vec::new(), stream: None, decoding: Default::default(), hud, wheel_rig, last_ms: None, accumulator: 0.0, timings: [0.0; 6], metrics:Default::default(),last_profile_log:0.0,profile_logging:true,io_metrics:serde_json::Value::Null, pacer: splat_engine::pacing::FramePacer::new(splat_engine::pacing::PacingMode::Auto) })
+        Ok(Viewer { engine, frame, level_chunks: Vec::new(), stream: None, decoding: Default::default(), worker_chunk: None, hud, wheel_rig, last_ms: None, accumulator: 0.0, timings: [0.0; 6], metrics:Default::default(),last_profile_log:0.0,profile_logging:true,io_metrics:serde_json::Value::Null, pacer: splat_engine::pacing::FramePacer::new(splat_engine::pacing::PacingMode::Auto) })
     }
 
     /// One animation frame. `now_ms` is `requestAnimationFrame`'s timestamp. Runs whole engine ticks for the elapsed
@@ -211,7 +228,14 @@ impl Viewer {
         let mut stream = splat_render::stream::LevelStream::from_json(&lod_meta, &chunk_metas, stream_settings(&self.engine.config)).map_err(js_error)?;
         self.frame.start_level_stream(&mut stream).map_err(js_error)?;
         self.engine.log.log(self.engine.tick, Level::Info, "level", format!("streaming {} leaves, pool of {} splats", stream.lod_meta().leaves.len(), stream.settings.capacity));
+        self.worker_chunk = None;
         self.stream = Some(stream);
+        Ok(())
+    }
+
+    /// Enables or clears opt-in pool-layout fingerprints and allocation history for the active stream.
+    pub fn set_stream_layout_diagnostics(&mut self, enabled: bool) -> Result<(), JsValue> {
+        self.stream.as_mut().ok_or_else(|| JsValue::from_str("not streaming"))?.set_layout_diagnostics(enabled);
         Ok(())
     }
 
@@ -250,6 +274,28 @@ impl Viewer {
         }
     }
 
+    /// Begin an opt-in worker chunk. Staged pixels are private until the complete chunk validates.
+    pub fn worker_chunk_begin(&mut self, file: usize, meta: Vec<u8>) -> Result<(), JsValue> {
+        if self.worker_chunk.is_some() { return Err(JsValue::from_str("worker chunk already staged")); }
+        let meta = sog::parse_meta_json(&meta).map_err(js_error)?;
+        if !self.stream.as_ref().is_some_and(|s| s.accepts_chunk_meta(file, &meta)) { return Err(JsValue::from_str("worker chunk metadata mismatch")); }
+        self.worker_chunk = Some(worker_decode::StagedChunk::new(file, meta));
+        Ok(())
+    }
+
+    /// Stage one worker texture; the seventh validates and atomically inserts the complete bundle.
+    pub fn worker_chunk_texture(&mut self, index: usize, width: u32, height: u32, rgba: Vec<u8>) -> Result<(), JsValue> {
+        let chunk = self.worker_chunk.as_mut().ok_or_else(|| JsValue::from_str("no staged worker chunk"))?;
+        chunk.push(index, width, height, rgba).map_err(js_error)?;
+        if index == 6 {
+            let (file, bundle) = self.worker_chunk.take().expect("chunk exists").finish().map_err(js_error)?;
+            self.stream.as_mut().ok_or_else(|| JsValue::from_str("not streaming"))?.insert(file, bundle);
+        }
+        Ok(())
+    }
+
+    pub fn worker_chunk_abort(&mut self) { self.worker_chunk = None; }
+
     /// A requested chunk could not be fetched; the stream may ask for it again.
     pub fn level_chunk_failed(&mut self, file: usize) {
         if let Some(stream) = self.stream.as_mut() {
@@ -275,12 +321,34 @@ impl Viewer {
 
     pub fn stream_stats(&self) -> String {
         match self.stream.as_ref().map(|s| s.stats()) {
-            Some(s) => format!(
-                "{{\"resident\":{},\"wanted\":{},\"leaves_per_lod\":{:?},\"empty\":{},\"pending\":{},\"chunks\":{},\"in_flight\":{},\"visible\":{},\"fading\":{},\"switches\":{},\"near_switches\":{},\"detail_met\":{:.2},\"detail_scale\":{:.2}}}",
-                s.resident_splats, s.wanted_splats, s.leaves_per_lod, s.leaves_empty, s.leaves_pending, s.chunks_loaded, s.chunks_in_flight, s.leaves_visible, s.fading, s.switches, s.near_switches, s.detail_met, s.detail_scale
-            ),
+            Some(s) => {
+                serde_json::json!({
+                    "resident": s.resident_splats,
+                    "wanted": s.wanted_splats,
+                    "active_slots": s.active_slots,
+                    "leaves_per_lod": s.leaves_per_lod,
+                    "empty": s.leaves_empty,
+                    "pending": s.leaves_pending,
+                    "chunks": s.chunks_loaded,
+                    "in_flight": s.chunks_in_flight,
+                    "visible": s.leaves_visible,
+                    "fading": s.fading,
+                    "switches": s.switches,
+                    "near_switches": s.near_switches,
+                    "detail_met": s.detail_met,
+                    "detail_scale": s.detail_scale,
+                }).to_string()
+            }
             None => "null".into(),
         }
+    }
+
+    /// Returns the opt-in layout trace as JSON on explicit read, or `null` when disabled or not streaming.
+    pub fn stream_layout_diagnostics(&self) -> String {
+        self.stream
+            .as_ref()
+            .and_then(|stream| stream.layout_diagnostics())
+            .map_or_else(|| "null".into(), |diagnostics| diagnostics.json().to_string())
     }
 
     /// The level's chunk folders to fetch, as a JSON array (e.g. `["2_0","2_1"]`), from its `lod-meta.json`, at the

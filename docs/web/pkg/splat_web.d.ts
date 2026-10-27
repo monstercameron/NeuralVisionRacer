@@ -109,6 +109,10 @@ export class Viewer {
      */
     set_level_name(name: string): void;
     /**
+     * Enables or clears opt-in pool-layout fingerprints and allocation history for the active stream.
+     */
+    set_stream_layout_diagnostics(enabled: boolean): void;
+    /**
      * Paddle shift: +1 up, -1 down.
      */
     shift(direction: number): void;
@@ -127,6 +131,10 @@ export class Viewer {
      */
     status(): string;
     /**
+     * Returns the opt-in layout trace as JSON on explicit read, or `null` when disabled or not streaming.
+     */
+    stream_layout_diagnostics(): string;
+    /**
      * The leaves nearest the LOD centre with their wanted and resident LOD, for debugging pop-in.
      */
     stream_near(n: number): string;
@@ -143,17 +151,41 @@ export class Viewer {
      * Switches between the chase camera and the free camera; returns the console reply.
      */
     toggle_follow(): string;
+    worker_chunk_abort(): void;
+    /**
+     * Begin an opt-in worker chunk. Staged pixels are private until the complete chunk validates.
+     */
+    worker_chunk_begin(file: number, meta: Uint8Array): void;
+    /**
+     * Stage one worker texture; the seventh validates and atomically inserts the complete bundle.
+     */
+    worker_chunk_texture(index: number, width: number, height: number, rgba: Uint8Array): void;
     /**
      * Scroll zoom; positive steps zoom in.
      */
     zoom(steps: number): void;
 }
 
+/**
+ * One scalar-decoded texture, exported for the opt-in worker experiment.
+ */
+export class WorkerTexture {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    height(): number;
+    take_pixels(): Uint8Array;
+    width(): number;
+}
+
+export function worker_decode_texture(index: number, bytes: Uint8Array): WorkerTexture;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_viewer_free: (a: number, b: number) => void;
+    readonly __wbg_workertexture_free: (a: number, b: number) => void;
     readonly viewer_add_level_chunk: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number) => [number, number, number];
     readonly viewer_add_stream_chunk: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => [number, number];
     readonly viewer_camera_mode: (a: number) => [number, number];
@@ -176,21 +208,30 @@ export interface InitOutput {
     readonly viewer_set_hud: (a: number, b: number, c: number) => [number, number];
     readonly viewer_set_io_metrics: (a: number, b: number, c: number) => void;
     readonly viewer_set_level_name: (a: number, b: number, c: number) => void;
+    readonly viewer_set_stream_layout_diagnostics: (a: number, b: number) => [number, number];
     readonly viewer_shift: (a: number, b: number) => void;
     readonly viewer_should_render: (a: number, b: number) => number;
     readonly viewer_start_stream: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly viewer_status: (a: number) => [number, number];
+    readonly viewer_stream_layout_diagnostics: (a: number) => [number, number];
     readonly viewer_stream_near: (a: number, b: number) => [number, number];
     readonly viewer_stream_stats: (a: number) => [number, number];
     readonly viewer_stream_switches: (a: number) => [number, number];
     readonly viewer_streaming: (a: number) => number;
     readonly viewer_toggle_follow: (a: number) => [number, number];
+    readonly viewer_worker_chunk_abort: (a: number) => void;
+    readonly viewer_worker_chunk_begin: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly viewer_worker_chunk_texture: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly viewer_zoom: (a: number, b: number) => void;
+    readonly worker_decode_texture: (a: number, b: number, c: number) => [number, number, number];
+    readonly workertexture_height: (a: number) => number;
+    readonly workertexture_take_pixels: (a: number) => [number, number];
+    readonly workertexture_width: (a: number) => number;
     readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___js_sys_76b3957f13640b70___Function_fn_wasm_bindgen_7b0a4a0adf17f3da___JsValue_____wasm_bindgen_7b0a4a0adf17f3da___sys__Undefined___js_sys_76b3957f13640b70___Function_fn_wasm_bindgen_7b0a4a0adf17f3da___JsValue_____wasm_bindgen_7b0a4a0adf17f3da___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__35: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__36: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__44: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__45: (a: number, b: number, c: any) => [number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

@@ -344,6 +344,16 @@ export class Viewer {
         wasm.viewer_set_level_name(this.__wbg_ptr, ptr0, len0);
     }
     /**
+     * Enables or clears opt-in pool-layout fingerprints and allocation history for the active stream.
+     * @param {boolean} enabled
+     */
+    set_stream_layout_diagnostics(enabled) {
+        const ret = wasm.viewer_set_stream_layout_diagnostics(this.__wbg_ptr, enabled);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Paddle shift: +1 up, -1 down.
      * @param {number} direction
      */
@@ -385,6 +395,22 @@ export class Viewer {
         let deferred1_1;
         try {
             const ret = wasm.viewer_status(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Returns the opt-in layout trace as JSON on explicit read, or `null` when disabled or not streaming.
+     * @returns {string}
+     */
+    stream_layout_diagnostics() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.viewer_stream_layout_diagnostics(this.__wbg_ptr);
             deferred1_0 = ret[0];
             deferred1_1 = ret[1];
             return getStringFromWasm0(ret[0], ret[1]);
@@ -464,6 +490,37 @@ export class Viewer {
             wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
         }
     }
+    worker_chunk_abort() {
+        wasm.viewer_worker_chunk_abort(this.__wbg_ptr);
+    }
+    /**
+     * Begin an opt-in worker chunk. Staged pixels are private until the complete chunk validates.
+     * @param {number} file
+     * @param {Uint8Array} meta
+     */
+    worker_chunk_begin(file, meta) {
+        const ptr0 = passArray8ToWasm0(meta, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.viewer_worker_chunk_begin(this.__wbg_ptr, file, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Stage one worker texture; the seventh validates and atomically inserts the complete bundle.
+     * @param {number} index
+     * @param {number} width
+     * @param {number} height
+     * @param {Uint8Array} rgba
+     */
+    worker_chunk_texture(index, width, height, rgba) {
+        const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.viewer_worker_chunk_texture(this.__wbg_ptr, index, width, height, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
     /**
      * Scroll zoom; positive steps zoom in.
      * @param {number} steps
@@ -473,6 +530,67 @@ export class Viewer {
     }
 }
 if (Symbol.dispose) Viewer.prototype[Symbol.dispose] = Viewer.prototype.free;
+
+/**
+ * One scalar-decoded texture, exported for the opt-in worker experiment.
+ */
+export class WorkerTexture {
+    static __wrap(ptr) {
+        const obj = Object.create(WorkerTexture.prototype);
+        obj.__wbg_ptr = ptr;
+        WorkerTextureFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WorkerTextureFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_workertexture_free(ptr, 0);
+    }
+    /**
+     * @returns {number}
+     */
+    height() {
+        const ret = wasm.workertexture_height(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Uint8Array}
+     */
+    take_pixels() {
+        const ret = wasm.workertexture_take_pixels(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @returns {number}
+     */
+    width() {
+        const ret = wasm.workertexture_width(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+}
+if (Symbol.dispose) WorkerTexture.prototype[Symbol.dispose] = WorkerTexture.prototype.free;
+
+/**
+ * @param {number} index
+ * @param {Uint8Array} bytes
+ * @returns {WorkerTexture}
+ */
+export function worker_decode_texture(index, bytes) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.worker_decode_texture(index, ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return WorkerTexture.__wrap(ret[0]);
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -1601,23 +1719,23 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, getArrayU8FromWasm0(arg2, arg3), arg4, arg5);
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1734, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1737, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true_);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 1689, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 1693, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true_);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 1689, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__35);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 1693, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__44);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 1689, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__36);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 1693, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__45);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0) {
@@ -1665,15 +1783,15 @@ function wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bin
     }
 }
 
-function wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__35(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__35(arg0, arg1, arg2);
+function wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__44(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__44(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__36(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__36(arg0, arg1, arg2);
+function wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__45(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_7b0a4a0adf17f3da___convert__closures_____invoke___wasm_bindgen_7b0a4a0adf17f3da___sys__JsNullable_wgpu_e02f8868a75c5f0f___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_7b0a4a0adf17f3da___JsError___true__45(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
@@ -1769,6 +1887,9 @@ const __wbindgen_enum_GpuVertexStepMode = ["vertex", "instance"];
 const ViewerFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_viewer_free(ptr, 1));
+const WorkerTextureFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_workertexture_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

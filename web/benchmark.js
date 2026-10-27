@@ -6,10 +6,20 @@ if (!["baseline", "current", "prepass_reference", "snapshot"].includes(build)) t
 const snapshot = params.get("snapshot") || "browser-benchmark";
 if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(snapshot)) throw new Error("Invalid snapshot name");
 const modulePath = build === "snapshot" ? `../logs/${snapshot}/baseline-pkg/splat_web.js` : build === "baseline" ? "../logs/browser-benchmark/baseline-pkg/splat_web.js" : build === "prepass_reference" ? "../logs/depth-prepass-reference/baseline-pkg/splat_web.js" : "./pkg/splat_web.js";
-const {default:init, Viewer} = await import(modulePath);
+const {default:init, Viewer, worker_decode_texture} = await import(modulePath);
 const level = params.get("level") || "saburi-alley-yazd";
 if (!/^[\w-]+$/.test(level)) throw new Error("Invalid level name");
 const streaming = params.get("stream") === "1";
+const workerDecode = params.get("decode_worker") === "1";
+if (workerDecode && (!streaming || build !== "current")) throw new Error("Worker experiment requires current streaming build");
+const traceIngest = params.get("trace_ingest") === "1";
+if (traceIngest && (!workerDecode || !streaming || build !== "current")) throw new Error("Ingestion tracing requires the current worker streaming build");
+const alignClock = params.get("align_clock") === "1";
+if (alignClock && !streaming) throw new Error("Synthetic clock alignment requires a streaming benchmark");
+// Streaming can submit at most 120 rounds × 16 frames. Anchor later frames beyond that bound so
+// worker and main-thread runs use the same post-settle visual time despite different settle lengths.
+const alignedClockFrame = 2048;
+const syntheticFrameMs = 1000 / 60;
 const frames = Math.max(30, Math.min(600, Math.trunc(Number(params.get("frames"))) || 120));
 const label = params.get("label") || "unlabelled";
 const status = document.getElementById("status");
@@ -59,6 +69,11 @@ async function run() {
     command(`perf present ${presentation}`);
   }
   command("perf log off"); command("pause"); command("step 180");
+  const captureSceneState = () => ({
+    engine: JSON.parse(viewer.status()),
+    camera: command("camera show"),
+    car: command("car"),
+  });
   const files = ["meta.json","means_l.webp","means_u.webp","quats.webp","scales.webp","sh0.webp","shN_labels.webp","shN_centroids.webp"];
   const camera = params.get("camera");
   if (camera) {
@@ -66,9 +81,14 @@ async function run() {
     if (values.length!==6 || !values.every(Number.isFinite)) throw new Error("Camera needs six finite coordinates");
     command(`camera set ${values.join(" ")}`);
   }
-  let syntheticFrame = 0;
-  const renderFrame = now => viewer.frame(streaming ? 1000 + syntheticFrame++ * (1000/60) : now);
-  const submit = async count => {for(let i=0;i<count;) {const now=await raf();if(viewer.should_render(now)){renderFrame(now);i++;}}};
+  let syntheticFrame = 0, workerStager = null;
+  const workerStageMs = [], workerFailures = [], ingestTrace = [];
+  const renderFrame = now => {
+    workerStager?.tick();
+    viewer.frame(streaming ? 1000 + syntheticFrame++ * syntheticFrameMs : now);
+  };
+  const startupFrameMs = [], startupIntervalsMs = [];
+  const submit = async count => {let previous=null;for(let i=0;i<count;) {const now=await raf();if(viewer.should_render(now)){if(previous!==null)startupIntervalsMs.push(now-previous);previous=now;const start=performance.now();renderFrame(now);startupFrameMs.push(performance.now()-start);i++;}}};
   let dirs = [], streamSettle = null, startupProfile = null;
   if (streaming) {
     const names=JSON.parse(new TextDecoder().decode(lod)).filenames;
@@ -76,7 +96,43 @@ async function run() {
     const streamStart=performance.now();
     viewer.start_stream(lod,new TextEncoder().encode(`[${metas.map(bytes=>new TextDecoder().decode(bytes)).join(",")}]`));
     const startStreamMs=performance.now()-streamStart;
+    if (params.get("trace_layout") === "1") viewer.set_stream_layout_diagnostics(true);
     const requested=[];
+    const workerTools = workerDecode ? await import('./worker-decode-prototype.js') : null;
+    if (workerTools) workerStager = workerTools.createFrameStager(viewer, ms => workerStageMs.push(ms));
+    if (traceIngest && typeof worker_decode_texture !== "function") throw new Error("Current WASM package does not export worker_decode_texture");
+    const compareWorkerChunk = (input, outputs) => {
+      const streams = [];
+      for (let index = 0; index < outputs.length; index++) {
+        let texture = null;
+        try {
+          texture = worker_decode_texture(index, input.files[index]);
+          const mainPixels = texture.take_pixels(), workerOutput = outputs[index];
+          streams.push({index,...workerTools.compareDecodedTexture(texture.width(),texture.height(),mainPixels,workerOutput)});
+        } catch (error) {
+          streams.push({index,match:false,error:String(error)});
+        } finally {
+          texture?.free();
+        }
+      }
+      ingestTrace.push({file:input.file,match:streams.length === 7 && streams.every(stream => stream.match),streams});
+    };
+    const scheduler = workerTools ? workerTools.createDecodeScheduler({
+      createWorker: () => new Worker('./worker-decode-experiment.js', {type:'module'}),
+      maxPending: Math.max(1, names.length),
+      onDecoded: (input, outputs) => {
+        // This deliberately decodes each stream a second time on the main WASM, only in the opt-in diagnostic run.
+        if (traceIngest) compareWorkerChunk(input, outputs);
+        return workerStager.start(input, outputs);
+      },
+      onFallback: input => {
+        workerStager.cancel(input); viewer.worker_chunk_abort(); workerFailures.push(input.file);
+        try { viewer.add_stream_chunk(input.file,input.meta,...input.files); }
+        catch (error) { viewer.level_chunk_failed(input.file); throw error; }
+      },
+      onInvalid: input => { workerStager.cancel(input); viewer.worker_chunk_abort(); viewer.level_chunk_failed(input.file); workerFailures.push(input.file); },
+      onCancel: input => { workerStager.cancel(input); viewer.worker_chunk_abort(); viewer.level_chunk_failed(input.file); },
+    }) : null;
     let settled=false, rounds=0;
     for(;rounds<120;rounds++) {
       const requests=JSON.parse(viewer.level_requests());
@@ -86,15 +142,22 @@ async function run() {
         const meta=await data(`${dir}/${folder}/meta.json`);
         const hasSh="shN" in JSON.parse(new TextDecoder().decode(meta));
         const parts=await Promise.all(files.slice(1).map(name=>hasSh||!name.startsWith("shN") ? data(`${dir}/${folder}/${name}`) : new Uint8Array()));
-        viewer.add_stream_chunk(file,meta,...parts);
+        if (scheduler) {
+          if (!scheduler.submit({file,meta,hasSh,files:parts})) throw new Error('Worker queue full');
+        } else viewer.add_stream_chunk(file,meta,...parts);
       }
       await submit(16);
       const stats=JSON.parse(viewer.stream_stats()), profile=command("perf");
-      if(!requests.length && stats.in_flight===0 && stats.pending===0 && stats.empty===0 && stats.fading===0 && !profile.decode_queue) {settled=true;break;}
+      if(!requests.length && stats.in_flight===0 && stats.pending===0 && stats.empty===0 && stats.fading===0 && !profile.decode_queue && (!scheduler || scheduler.pending()===0)) {settled=true;break;}
     }
     if(!settled) throw new Error("Streaming did not settle within 120 rounds");
     streamSettle={rounds:rounds+1,requested,synthetic_frames:syntheticFrame,start_stream_ms:startStreamMs};
     startupProfile=command("perf");
+    if (scheduler) scheduler.reset();
+    if (alignClock) {
+      if (syntheticFrame > alignedClockFrame) throw new Error("Streaming exceeded the aligned synthetic clock anchor");
+      syntheticFrame = alignedClockFrame;
+    }
   } else {
     dirs = JSON.parse(viewer.level_chunk_dirs(lod));
     for (let i = 0; i < dirs.length; i++) {
@@ -106,6 +169,7 @@ async function run() {
   }
   command("perf sample 1");
   for (let i=0; i<40;) { const now=await raf(); if (viewer.should_render(now)) {renderFrame(now);i++;} }
+  const comparisonState = captureSceneState();
   command("perf reset");
   const cpu = [], intervals = [];
   let previous = null;
@@ -136,10 +200,34 @@ async function run() {
   }
   // Capture in the submitting task so the WebGPU canvas has not been recycled.
   renderFrame(await raf());
+  const clockAlignment = streaming ? {
+    mode: alignClock ? "fixed-post-settle-anchor" : "continuous",
+    frame_period_ms: syntheticFrameMs,
+    settled_frame_count: streamSettle.synthetic_frames,
+    anchor_frame_index: alignClock ? alignedClockFrame : null,
+    alignment_gap_frames: alignClock ? alignedClockFrame - streamSettle.synthetic_frames : 0,
+    first_measurement_frame_index: alignClock ? alignedClockFrame + 40 : null,
+    capture_frame_index: syntheticFrame - 1,
+    capture_time_ms: 1000 + (syntheticFrame - 1) * syntheticFrameMs,
+  } : null;
   const image = document.createElement("a"); image.id="reference-image"; image.download=`${label}.png`;
   image.href=document.getElementById("view").toDataURL("image/png"); image.textContent="Download reference image";
   result.before(image);
-  const report = {label, build, wasm_sha256, verification, level, dimensions:[1280,720], fixed_lod:streaming ? null : 1, frames, chunks:streaming ? new Set(streamSettle.requested).size : dirs.length, streaming, stream_settle:streamSettle, startup_profile:startupProfile, stream_stats:streaming ? JSON.parse(viewer.stream_stats()) : null,
+  const traceIngestSummary = traceIngest ? {
+    enabled:true,
+    chunks_compared:ingestTrace.length,
+    streams_compared:ingestTrace.reduce((sum,chunk)=>sum+chunk.streams.filter(stream=>!stream.error).length,0),
+    mismatched_chunks:ingestTrace.filter(chunk=>!chunk.match).map(chunk=>chunk.file),
+    worker_failures:workerFailures,
+    complete:workerFailures.length===0 && ingestTrace.length>0 && ingestTrace.every(chunk=>chunk.streams.length===7 && chunk.streams.every(stream=>!stream.error)),
+    all_equal:workerFailures.length===0 && ingestTrace.length>0 && ingestTrace.every(chunk=>chunk.match),
+    chunks:ingestTrace,
+  } : null;
+  const report = {label, build, wasm_sha256, verification, level, dimensions:[1280,720], fixed_lod:streaming ? null : 1, frames, chunks:streaming ? new Set(streamSettle.requested).size : dirs.length, streaming, stream_settle:streamSettle, clock_alignment:clockAlignment, comparison_state:comparisonState, startup_profile:startupProfile, stream_stats:streaming ? JSON.parse(viewer.stream_stats()) : null,
+    layout_diagnostics:streaming && params.get("trace_layout") === "1" ? JSON.parse(viewer.stream_layout_diagnostics()) : null,
+    worker_decode:workerDecode, worker_stage_ms:workerStageMs, worker_failures:workerFailures,
+    trace_ingest:traceIngestSummary,
+    startup_frame_ms:startupFrameMs, startup_intervals_ms:startupIntervalsMs,
     timestamp:new Date().toISOString(), user_agent:navigator.userAgent, cpu_submission_ms:cpu,
     raf_intervals_ms:intervals, profile};
   result.textContent = JSON.stringify(report,null,2);

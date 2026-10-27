@@ -148,3 +148,17 @@ The native WebCodecs fidelity fixture compared all seven WebPs in one Saburi chu
 ## Closeout — user-requested stop
 
 The user requested that this batch be committed and the optimization session closed out early. The planned 08:20:31 UTC continuation and five-minute updates are cancelled; remaining prototype ideas above are future work, not completed improvements. The final Pages build and checkpoint cover the verified code, diagnostics, and research reports in this batch.
+
+## Continuation — single-agent limit
+
+After the closeout checkpoint, the user requested that optimization continue with exactly one GPT-6.1 Terra agent at medium reasoning. The coordinator reviews and integrates that agent's work. The five-minute update schedule has been restored; the prior 08:20:31 UTC deadline and 30-minute Pages/commit checkpoints continue unless the user changes them.
+
+The user subsequently changed the concurrency limit to two GPT-6 Luna agents at max reasoning. The Terra agent was stopped; the coordinator retains integration and test ownership.
+
+## Pass 8 — eviction guard and scalar worker experiment
+
+A streaming eviction guard skips constructing needed/prefetch sets and sorting when the entire decoded cache already fits its configured limit. The original path cannot evict in that case. Stream tests cover the boundary and protected pending chunks; an isolated native Saburi-tree fixture measured the prior scan at roughly 2.9–3.3 microseconds in most rounds. This is not a measured FPS gain.
+
+The scalar WASM worker is an opt-in benchmark experiment only (`decode_worker=1`); the normal game still decodes on the main thread. A bounded FIFO scheduler retains compressed inputs for transport-failure fallback, validates decoded output, stages one texture per frame, rejects invalid chunks, and uses generation-aware cancellation. The Rust staging API checks stream order, metadata, byte lengths and geometry before atomic insertion. Its browser comparison for one Saburi fixture produced identical bytes for all **77 streams across 11 requested chunks**. In two alternating pairs, startup frame submission p95 including staging was **33.7/34.2 ms baseline vs 11.1/10.6 ms worker**, while settling took **128 vs 160 synthetic frames**; rAF maxima were variable and total decode latency was not improved. These are shared-machine fixed-scene measurements, not general gameplay FPS.
+
+The candidate fails the existing pixel-exact screenshot gate: with aligned render clocks and equal camera, telemetry, requests and final logical LOD counts, **15,978 RGB channels differ (max 28)**. Separate opt-in allocation diagnostics show all 384 leaves have identical logical source mappings, but 326 have different pool starts in a low-overhead trace; asynchronous arrival changes first-fit allocation history, plausibly changing near-tied alpha blend order. This causal rendering explanation is an inference; it is not proof every changed pixel arises from sorting. Snapshot diagnostics cover current residents and exclude fading-out ranges; full trace serialization occurs only on explicit request and is not used for performance measurements. Preserve the worker as an experiment until visual acceptance, behavior under failures, memory, and trajectory tests are resolved.

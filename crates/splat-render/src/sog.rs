@@ -20,7 +20,7 @@ pub struct Texture {
 }
 
 /// The parts of `meta.json` the renderer uses.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Meta {
     pub count: u32,
     pub means_mins: [f32; 3],
