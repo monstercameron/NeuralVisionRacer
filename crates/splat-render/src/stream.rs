@@ -40,6 +40,11 @@ const PALETTE_CENTROIDS: u32 = 65536;
 const PALETTE_ROWS: u32 = PALETTE_CENTROIDS / 64;
 const SH_COEFFS: usize = 15;
 
+/// Every RGB channel in the reserved row decodes through the shared codebook to +0.0.
+fn zero_sh_centroid_row(sh_zero: u8) -> Vec<u8> {
+    vec![sh_zero, sh_zero, sh_zero, 255].repeat(64 * SH_COEFFS)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamSettings {
     /// LOD 0 reaches this far from the camera, in level units (metres); each further LOD doubles it. Used only when
@@ -542,8 +547,11 @@ impl LevelStream {
     /// Writes the reserved zero centroid and sizes the palettes to the pool's centroid texture. Call once on a new pool.
     pub fn init_pool(&mut self, pool: &GsplatScene, queue: &wgpu::Queue) {
         self.palettes = vec![None; (pool.centroid_rows().saturating_sub(1) / PALETTE_ROWS) as usize];
-        let row = vec![self.sh_zero, self.sh_zero, self.sh_zero, 255].repeat(64 * SH_COEFFS);
+        let row = zero_sh_centroid_row(self.sh_zero);
         pool.write_centroid_rows(queue, 0, &row);
+        // Only this pool has the reserved row. Static/car scenes start with the
+        // flag at zero, so their valid palette label 0 still evaluates SH.
+        pool.set_uniform(queue, "sh_zero_reserved", &1u32.to_le_bytes());
     }
 
     /// Uploads leaves whose wanted range is loaded, in view and nearest first, within the per-frame budget; releases
@@ -1366,6 +1374,35 @@ mod tests {
                 assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
             }
         }
+    }
+
+    #[test]
+    fn reserved_zero_sh_row_and_palette_labels_stay_distinct() {
+        let mut stream = stream(10_000);
+        let zero = stream.sh_zero;
+        assert_eq!(stream.shared.sh_n_codebook[zero as usize].to_bits(), 0.0f32.to_bits());
+        let row = zero_sh_centroid_row(zero);
+        assert_eq!(row.len(), 64 * SH_COEFFS * 4);
+        for texel in row.chunks_exact(4) {
+            assert_eq!(texel[3], 255);
+            for &component in &texel[..3] {
+                assert_eq!(stream.shared.sh_n_codebook[component as usize].to_bits(), 0.0f32.to_bits());
+            }
+        }
+
+        stream.remaps[0].as_mut().unwrap().meta.sh_n_count = 65_536;
+        let remap = stream.remaps[0].as_ref().unwrap();
+        let mut textures: BTreeMap<_, _> = ["means_l", "means_u", "scales", "sh0", "sh_labels"].into_iter()
+            .map(|name| (name, sog::Texture { width: 2, height: 1, rgba: vec![0; 8] })).collect();
+        // A real source centroid 0 becomes label 64. Source centroid 65472 becomes
+        // label 65536, whose low two bytes are zero but whose high byte is not.
+        textures.get_mut("sh_labels").unwrap().rgba = vec![0, 0, 0, 255, 192, 255, 0, 255];
+        let bundle = Bundle { meta: remap.meta.clone(), textures };
+        let range = Range { file: 0, offset: 0, count: 2 };
+        let absent = encode_upload(&bundle, remap, &stream.shared, range, None, None);
+        let present = encode_upload(&bundle, remap, &stream.shared, range, Some(0), None);
+        assert_eq!(absent.labels, [0, 0, 0, 255, 0, 0, 0, 255]);
+        assert_eq!(present.labels, [64, 0, 0, 255, 0, 0, 1, 255]);
     }
 
     /// Run only in a reserved CPU timing slot:

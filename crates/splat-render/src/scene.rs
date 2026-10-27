@@ -220,7 +220,7 @@ fn assemble(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-    queue.write_buffer(&centers, 0, &f32s(&centres.concat()));
+    queue.write_buffer(&centers, 0, centres_le_bytes(centres).as_ref());
     // Per-slot opacity for crossfades (see `carShadowVS`): whole until a sort writes otherwise.
     let fade = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("splatFade"),
@@ -410,7 +410,7 @@ impl GsplatScene {
                 write_slots(queue, texture, self.splat_width, start, count, texels);
             }
         }
-        queue.write_buffer(&self.centers, u64::from(start) * 12, &f32s(&centres.concat()));
+        queue.write_buffer(&self.centers, u64::from(start) * 12, centres_le_bytes(centres).as_ref());
         self.sorter.invalidate();
     }
 
@@ -444,6 +444,12 @@ impl GsplatScene {
         let rows = (rgba.len() / (width as usize * 4)) as u32;
         if rows == 0 {
             return;
+        }
+        // Row zero may no longer decode to zero after this public write.
+        // LevelStream::init_pool enables the shortcut again after writing its
+        // known zero row; uploads to other palette rows leave it unchanged.
+        if first_row == 0 {
+            self.set_uniform(queue, "sh_zero_reserved", &0u32.to_le_bytes());
         }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: first_row, z: 0 }, aspect: wgpu::TextureAspect::All },
@@ -800,6 +806,46 @@ fn f32s(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
+/// The GPU expects little-endian IEEE-754 values. On little-endian hosts, borrowing the existing centres preserves
+/// every bit without two temporary copies. Big-endian targets use the explicit conversion from the original path.
+fn centres_le_bytes(centres: &[[f32; 3]]) -> std::borrow::Cow<'_, [u8]> {
+    #[cfg(target_endian = "little")]
+    {
+        std::borrow::Cow::Borrowed(bytemuck::cast_slice(centres))
+    }
+    #[cfg(target_endian = "big")]
+    {
+        std::borrow::Cow::Owned(centres_to_le_bytes(centres))
+    }
+}
+
+#[cfg(any(test, target_endian = "big"))]
+fn centres_to_le_bytes(centres: &[[f32; 3]]) -> Vec<u8> {
+    centres.iter().flat_map(|centre| centre.iter().flat_map(|value| value.to_le_bytes())).collect()
+}
+
 fn u32s(values: &[u32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn centre_bytes_preserve_float_bits_and_little_endian_order() {
+        let centres = [
+            [0.0, -0.0, f32::INFINITY],
+            [f32::NEG_INFINITY, f32::from_bits(0x7fc0_1234), f32::from_bits(0xffc0_4321)],
+            [f32::from_bits(0x7fa0_0001), f32::from_bits(0xffa0_0001), f32::from_bits(1)],
+            [f32::MIN, f32::MAX, -37.25],
+        ];
+        let original = f32s(&centres.concat());
+        let bytes = centres_le_bytes(&centres);
+        assert_eq!(bytes.as_ref(), original.as_slice());
+        assert_eq!(centres_to_le_bytes(&centres), original);
+        assert!(centres_le_bytes(&[]).is_empty());
+        #[cfg(target_endian = "little")]
+        assert!(matches!(bytes, std::borrow::Cow::Borrowed(_)));
+    }
 }

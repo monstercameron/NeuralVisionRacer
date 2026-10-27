@@ -1265,6 +1265,7 @@ dependencies = [
 name = "splat-render"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "image",
  "pollster",
  "serde_json",

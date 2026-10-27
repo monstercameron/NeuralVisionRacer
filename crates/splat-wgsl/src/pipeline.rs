@@ -60,6 +60,34 @@ pub fn sog_v2_sh_overrides() -> Overrides {
     const DIR: &str = "let dir = normalize(viewDir * modelView3x3);";
     assert!(VS.contains(DIR), "gsplat SH direction hook changed");
     let vs = VS.replace(DIR, "let dir = wheelShDirection(normalize(viewDir * modelView3x3));");
+    // Stream pools reserve centroid zero as exactly zero SH. Other scenes,
+    // including cars, may have a real colour at label zero. This per-scene
+    // capability defaults to zero and is enabled only after the pool's zero
+    // centroid has been initialized. Test all three bytes of the 24-bit label.
+    const VARYING: &str = "varying gaussianUV: half2;";
+    const SH_START: &str = "    #if SH_BANDS > 0\n        // calculate the model-space view direction.";
+    const SH_RESULT: &str = "        clr = half4(clr.xyz + evalSH(&sh, dir) * half(scale), clr.a);";
+    assert_eq!(vs.matches(VARYING).count(), 1, "gsplat SH uniform hook changed");
+    assert_eq!(vs.matches(SH_START).count(), 1, "gsplat SH start hook changed");
+    assert_eq!(vs.matches(SH_RESULT).count(), 1, "gsplat SH result hook changed");
+    let vs = vs.replace(VARYING, r#"
+#if SH_BANDS > 0
+uniform sh_zero_reserved: u32;
+#endif
+varying gaussianUV: half2;
+"#);
+    let vs = vs.replace(SH_START, r#"
+    #if SH_BANDS > 0
+        #ifndef SPLAT_FULL_SH_REFERENCE
+            if (uniform.sh_zero_reserved == 0u || any(textureLoad(sh_labels, splat.uv, 0).xyz != vec3f(0.0))) {
+        #endif
+        // calculate the model-space view direction."#);
+    let vs = vs.replace(SH_RESULT, r#"
+        clr = half4(clr.xyz + evalSH(&sh, dir) * half(scale), clr.a);
+        #ifndef SPLAT_FULL_SH_REFERENCE
+            }
+        #endif
+"#);
     // Opacity alone can reject a depth splat before covariance projection. Keep the
     // original post-AA/colour-hook rejection too. This specialization applies only
     // when AA is disabled, so no opacity amplification or changed operation order
@@ -112,6 +140,7 @@ pub fn compose_gsplat(stage: Stage) -> Result<(String, Vec<Binding>), crate::pre
 
 /// Composes one stage with extra defines on top of the SOG V2 set, e.g. `PREPASS_PASS` for the depth prepass.
 /// `NAME=VALUE` sets a value and overrides the default, e.g. `SH_BANDS=0`.
+/// `SPLAT_FULL_SH_REFERENCE` disables the reserved-zero SH shortcut for comparison.
 pub fn compose_gsplat_with(stage: Stage, extra: &[&str]) -> Result<(String, Vec<Binding>), crate::preprocess::Error> {
     let key = match stage {
         Stage::Vertex => "gsplatVS",

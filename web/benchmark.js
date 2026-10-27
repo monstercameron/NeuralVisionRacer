@@ -73,7 +73,9 @@ async function run() {
   if (streaming) {
     const names=JSON.parse(new TextDecoder().decode(lod)).filenames;
     const metas=await Promise.all(names.map(name=>data(`${dir}/${name}`)));
+    const streamStart=performance.now();
     viewer.start_stream(lod,new TextEncoder().encode(`[${metas.map(bytes=>new TextDecoder().decode(bytes)).join(",")}]`));
+    const startStreamMs=performance.now()-streamStart;
     const requested=[];
     let settled=false, rounds=0;
     for(;rounds<120;rounds++) {
@@ -91,7 +93,7 @@ async function run() {
       if(!requests.length && stats.in_flight===0 && stats.pending===0 && stats.empty===0 && stats.fading===0 && !profile.decode_queue) {settled=true;break;}
     }
     if(!settled) throw new Error("Streaming did not settle within 120 rounds");
-    streamSettle={rounds:rounds+1,requested,synthetic_frames:syntheticFrame};
+    streamSettle={rounds:rounds+1,requested,synthetic_frames:syntheticFrame,start_stream_ms:startStreamMs};
     startupProfile=command("perf");
   } else {
     dirs = JSON.parse(viewer.level_chunk_dirs(lod));

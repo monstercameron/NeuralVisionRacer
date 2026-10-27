@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 /// Bind-group layout entries grouped by `@group` index, built from a binding table.
 ///
-/// Uniforms are shared across stages except the local vertex shadow and fragment aperture blocks.
+/// Uniforms are shared across stages except the vertex shadow/SH capability and fragment aperture blocks.
 /// Textures are `Float` sampled textures;
 /// the engine's unfilterable sentinel (RGBA32F codebook) is `filterable: false`. Samplers are
 /// `NonFiltering`, because the engine samples splat data with `textureLoad`, not filtered sampling.
@@ -35,11 +35,11 @@ pub fn bind_group_entries(bindings: &[Binding]) -> BTreeMap<u32, Vec<wgpu::BindG
         let entry = match &b.kind {
             BindingKind::Uniform { .. } => wgpu::BindGroupLayoutEntry {
                 binding: b.binding,
-                // Keep the portable 12-uniform per-stage budget: these two
-                // local blocks are consumed by one stage each.
+                // Keep the portable 12-uniform per-stage budget: these
+                // uniforms are consumed by one stage each.
                 visibility: match b.name.as_str() {
                     "cutout_window" => wgpu::ShaderStages::FRAGMENT,
-                    "shadow_box" => wgpu::ShaderStages::VERTEX,
+                    "shadow_box" | "sh_zero_reserved" => wgpu::ShaderStages::VERTEX,
                     _ => wgpu::ShaderStages::VERTEX_FRAGMENT,
                 },
                 ty: wgpu::BindingType::Buffer {

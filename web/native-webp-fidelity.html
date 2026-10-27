@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Native WebP SOG fidelity diagnostic</title>
+<style>body{font:14px system-ui;margin:2em}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>
+<h1>Native WebP decoder: SOG byte fidelity</h1>
+<p>This diagnostic compares every decoded channel with the scalar Rust/WASM decoder. It does not run timings.</p>
+<p id="status">Checking browser support…</p>
+<pre id="result"></pre>
+<script type="module" src="./native-webp-fidelity.js"></script>

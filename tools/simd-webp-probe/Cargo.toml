@@ -1,0 +1,17 @@
+[package]
+name = "simd-webp-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Match the versions and features selected by crates/splat-web/Cargo.lock.
+image = { version = "=0.25.10", default-features = false, features = ["webp", "png", "hdr"] }
+image-webp = "=0.2.4"
+serde_json = "=1.0.154"
+zip = { version = "=2.6.1", default-features = false }
+
+[workspace]
