@@ -1,47 +1,71 @@
 // Diagnostic-only scheduler for a single scalar decoder worker. This is not wired into the game.
-// The caller retains the compressed bytes; postMessage clones them so transport failures can retry unchanged.
-// onDecoded must validate against SOG metadata and commit atomically. Rejected decoded output is sent to onInvalid,
-// where the caller should release the stream's in-flight file; worker/protocol failures go to onFallback. A partial
-// commit must be rolled back before rejecting. The current worker protocol does not distinguish init from decode errors.
+// The caller retains compressed bytes for fallback. One decoded chunk may stage while the worker decodes the next;
+// all outstanding entries count toward maxPending, and staging/fallback callbacks remain FIFO.
 export function createDecodeScheduler({ createWorker, onDecoded, onFallback, onInvalid, onCancel, maxPending = 2, timeoutMs = 30000, setTimer = setTimeout, clearTimer = clearTimeout }) {
   if (!Number.isInteger(maxPending) || maxPending < 1 || !(timeoutMs > 0)) throw new Error('invalid scheduler limits');
   if (typeof createWorker !== 'function' || typeof onDecoded !== 'function' || typeof onFallback !== 'function' || typeof onInvalid !== 'function' || typeof onCancel !== 'function') throw new Error('missing scheduler callback');
-  let generation = 0, serial = 0, worker = null, disabled = false, active = null, queue = [];
+  let generation = 0, serial = 0, worker = null, disabled = false, disabledError = null;
+  let decoding = null, staging = null, entries = [], pumping = false, pumpAgain = false;
   function stopWorker() {
     if (worker) { worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null; worker.terminate(); worker = null; }
   }
-  function clearActive() {
-    if (active?.timer != null) clearTimer(active.timer);
-    const item = active; active = null; return item;
+  function clearDecode(item = decoding) {
+    if (!item) return;
+    if (item.timer != null) clearTimer(item.timer);
+    item.timer = null;
+    if (decoding === item) decoding = null;
   }
   function failTransport(error = new Error('worker transport failed')) {
+    if (disabled) return;
     disabled = true;
+    disabledError = error;
     stopWorker();
-    const item = clearActive();
-    try {
-      if (item) onFallback(item.input, error);
-    } finally {
-      // A caller callback should not strand already-queued inputs if it throws.
-      pump();
+    const failed = decoding;
+    clearDecode(failed);
+    for (const item of entries) {
+      if (item === failed || item.status === 'queued') {
+        item.status = 'fallback';
+        item.error = error;
+      }
     }
+    pump();
   }
-  function rejectContent(item, error) {
-    if (active !== item) return;
-    clearActive();
+  function settleStage(item) {
+    if (staging !== item || entries[0] !== item) return;
+    staging = null;
+    item.outputs = null;
+    item.input = null;
+    entries.shift();
+    pump();
+  }
+  function rejectStage(item, error) {
+    if (staging !== item || entries[0] !== item) return;
+    staging = null;
+    item.outputs = null;
+    item.status = 'invalid';
+    item.error = error;
+    pump();
+  }
+  function startStage(item) {
+    item.status = 'staging';
+    staging = item;
+    let result;
     try {
-      onInvalid(item.input, error);
-    } finally {
-      pump();
-    }
-  }
-  function pump() {
-    if (active || !queue.length) return;
-    const input = queue.shift();
-    if (disabled) {
-      try { onFallback(input, new Error('worker disabled after transport failure')); }
-      finally { pump(); }
+      // Keep this FIFO: only the head entry is passed to the stager, even if a later decode is ready.
+      result = onDecoded(item.input, item.outputs);
+    } catch (error) {
+      rejectStage(item, error);
       return;
     }
+    Promise.resolve(result).then(() => settleStage(item), error => rejectStage(item, error));
+  }
+  function pumpDecode() {
+    if (disabled || decoding) return;
+    // Permit one decode while an earlier chunk stages. Once that decode is ready (or invalid/fallback),
+    // wait for the older stage to finish before decoding another, keeping decoded memory bounded.
+    if (entries.some(item => item.status === 'decoded' || item.status === 'invalid' || item.status === 'fallback')) return;
+    const item = entries.find(entry => entry.status === 'queued');
+    if (!item) return;
     try {
       if (!worker) {
         worker = createWorker();
@@ -51,51 +75,96 @@ export function createDecodeScheduler({ createWorker, onDecoded, onFallback, onI
         worker.onerror = ownerFailed;
         worker.onmessageerror = ownerFailed;
         worker.onmessage = ({ data }) => {
-          if (worker !== owner || !active || data?.generation !== generation || data?.id !== active.id) return;
-          const item = active;
+          if (worker !== owner || generation !== ownerGeneration || !decoding || data?.generation !== generation || data?.id !== decoding.id) return;
           if (data.error) { failTransport(new Error(`worker decode failed: ${data.error}`)); return; }
+          const decoded = decoding;
+          clearDecode(decoded);
           try {
-            validateDecodedStreams(data.outputs, item.input.hasSh);
+            validateDecodedStreams(data.outputs, decoded.input.hasSh);
+            decoded.outputs = data.outputs;
+            decoded.status = 'decoded';
           } catch (error) {
-            rejectContent(item, error);
-            return;
+            decoded.status = 'invalid';
+            decoded.error = error;
           }
-          if (item.timer != null) { clearTimer(item.timer); item.timer = null; }
-          // Keep the chunk active until staged pixels have been committed or rolled back.
-          try {
-            Promise.resolve(onDecoded(item.input, data.outputs)).then(() => {
-              if (active !== item) return;
-              clearActive(); pump();
-            }, error => { if (active === item) rejectContent(item, error); });
-          } catch (error) { rejectContent(item, error); }
+          pump();
         };
       }
       const id = ++serial;
-      active = { input, id, timer: null };
-      const timerGeneration = generation;
-      active.timer = setTimer(() => { if (generation === timerGeneration && active?.id === id) failTransport(new Error('worker timed out')); }, timeoutMs);
-      worker.postMessage({ generation, id, files: input.files });
+      item.id = id;
+      item.status = 'decoding';
+      decoding = item;
+      const ownerGeneration = generation;
+      item.timer = setTimer(() => { if (generation === ownerGeneration && decoding === item) failTransport(new Error('worker timed out')); }, timeoutMs);
+      worker.postMessage({ generation, id, files: item.input.files });
     } catch (_) {
       // A constructor or postMessage failure leaves the original compressed input intact.
-      if (!active) active = { input, timer: null };
-      failTransport(new Error('worker creation or postMessage failed'));
+      if (decoding === item) clearDecode(item);
+      item.status = 'fallback';
+      item.error = new Error('worker creation or postMessage failed');
+      failTransport(item.error);
     }
+  }
+  function pump() {
+    if (pumping) { pumpAgain = true; return; }
+    pumping = true;
+    let callbackError = null;
+    try {
+      do {
+        pumpAgain = false;
+        while (!staging && entries.length) {
+          const head = entries[0];
+          if (head.status === 'decoded') {
+            startStage(head);
+            break;
+          }
+          if (head.status !== 'invalid' && head.status !== 'fallback') break;
+          entries.shift();
+          const input = head.input, error = head.error;
+          head.input = null;
+          head.outputs = null;
+          try {
+            if (head.status === 'invalid') onInvalid(input, error);
+            else onFallback(input, error);
+          } catch (callbackFailure) {
+            callbackError ||= callbackFailure;
+          }
+          pumpAgain = true;
+        }
+        try { pumpDecode(); } catch (error) { callbackError ||= error; }
+      } while (pumpAgain);
+    } finally {
+      pumping = false;
+    }
+    if (callbackError) throw callbackError;
   }
   return {
     submit(input) {
       if (!input || !Array.isArray(input.files) || input.files.length !== 7 || typeof input.hasSh !== 'boolean') throw new Error('expected seven compressed streams and SH flag');
-      if (queue.length + Number(active !== null) >= maxPending) return false;
-      queue.push(input); pump(); return true;
+      if (entries.length >= maxPending) return false;
+      entries.push({ input, status: disabled ? 'fallback' : 'queued', outputs: null, error: disabledError, id: null, timer: null });
+      pump(); return true;
     },
     reset() {
       generation++;
       stopWorker();
-      const item = clearActive();
-      const cancelled = item ? [item.input, ...queue] : queue;
-      queue = []; disabled = false;
-      for (const input of cancelled) onCancel(input);
+      clearDecode();
+      const cancelled = entries;
+      entries = [];
+      staging = null;
+      disabled = false;
+      disabledError = null;
+      let callbackError = null;
+      for (const item of cancelled) {
+        const input = item.input;
+        item.input = null;
+        item.outputs = null;
+        if (!input) continue;
+        try { onCancel(input); } catch (error) { callbackError ||= error; }
+      }
+      if (callbackError) throw callbackError;
     },
-    pending() { return queue.length + Number(active !== null); },
+    pending() { return entries.length; },
   };
 }
 

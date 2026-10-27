@@ -11,6 +11,7 @@ const level = params.get("level") || "saburi-alley-yazd";
 if (!/^[\w-]+$/.test(level)) throw new Error("Invalid level name");
 const streaming = params.get("stream") === "1";
 const workerDecode = params.get("decode_worker") === "1";
+const workerPendingLimit = 2;
 if (workerDecode && (!streaming || build !== "current")) throw new Error("Worker experiment requires current streaming build");
 const traceIngest = params.get("trace_ingest") === "1";
 if (traceIngest && (!workerDecode || !streaming || build !== "current")) throw new Error("Ingestion tracing requires the current worker streaming build");
@@ -119,7 +120,7 @@ async function run() {
     };
     const scheduler = workerTools ? workerTools.createDecodeScheduler({
       createWorker: () => new Worker('./worker-decode-experiment.js', {type:'module'}),
-      maxPending: Math.max(1, names.length),
+      maxPending: workerPendingLimit,
       onDecoded: (input, outputs) => {
         // This deliberately decodes each stream a second time on the main WASM, only in the opt-in diagnostic run.
         if (traceIngest) compareWorkerChunk(input, outputs);
@@ -137,6 +138,7 @@ async function run() {
     for(;rounds<120;rounds++) {
       const requests=JSON.parse(viewer.level_requests());
       for(const [file,folder] of requests) {
+        if (scheduler) while (scheduler.pending() >= workerPendingLimit) await submit(1);
         requested.push(file);
         status.textContent=`Streaming round ${rounds+1}: ${folder}`;
         const meta=await data(`${dir}/${folder}/meta.json`);
@@ -225,7 +227,7 @@ async function run() {
   } : null;
   const report = {label, build, wasm_sha256, verification, level, dimensions:[1280,720], fixed_lod:streaming ? null : 1, frames, chunks:streaming ? new Set(streamSettle.requested).size : dirs.length, streaming, stream_settle:streamSettle, clock_alignment:clockAlignment, comparison_state:comparisonState, startup_profile:startupProfile, stream_stats:streaming ? JSON.parse(viewer.stream_stats()) : null,
     layout_diagnostics:streaming && params.get("trace_layout") === "1" ? JSON.parse(viewer.stream_layout_diagnostics()) : null,
-    worker_decode:workerDecode, worker_stage_ms:workerStageMs, worker_failures:workerFailures,
+    worker_decode:workerDecode, worker_pending_limit:workerDecode ? workerPendingLimit : null, worker_stage_ms:workerStageMs, worker_failures:workerFailures,
     trace_ingest:traceIngestSummary,
     startup_frame_ms:startupFrameMs, startup_intervals_ms:startupIntervalsMs,
     timestamp:new Date().toISOString(), user_agent:navigator.userAgent, cpu_submission_ms:cpu,
