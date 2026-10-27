@@ -2,8 +2,8 @@
 // Fixed LOD, dimensions and paused physics isolate renderer changes from streaming churn.
 const params = new URLSearchParams(location.search);
 const build = params.get("build") || "current";
-if (!["baseline", "current"].includes(build)) throw new Error("Invalid build");
-const modulePath = build === "baseline" ? "../logs/browser-benchmark/baseline-pkg/splat_web.js" : "./pkg/splat_web.js";
+if (!["baseline", "current", "prepass_reference"].includes(build)) throw new Error("Invalid build");
+const modulePath = build === "baseline" ? "../logs/browser-benchmark/baseline-pkg/splat_web.js" : build === "prepass_reference" ? "../logs/depth-prepass-reference/baseline-pkg/splat_web.js" : "./pkg/splat_web.js";
 const {default:init, Viewer} = await import(modulePath);
 const level = params.get("level") || "saburi-alley-yazd";
 if (!/^[\w-]+$/.test(level)) throw new Error("Invalid level name");

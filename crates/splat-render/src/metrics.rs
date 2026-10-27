@@ -11,14 +11,24 @@ impl Metrics {
         if !ms.is_finite() || ms < 0.0 {
             return;
         }
-        let s = self.samples.entry(name.into()).or_default();
+        // Borrow the lookup key on the hot path. BTreeMap::entry would allocate
+        // a new String on every measurement, even when this series exists.
+        let s = if let Some(samples) = self.samples.get_mut(name) {
+            samples
+        } else {
+            self.samples.entry(name.into()).or_default()
+        };
         if s.len() == 120 {
             s.pop_front();
         }
         s.push_back(ms);
     }
     pub fn count(&mut self, name: &str, n: u64) {
-        *self.counters.entry(name.into()).or_default() += n;
+        if let Some(counter) = self.counters.get_mut(name) {
+            *counter += n;
+        } else {
+            self.counters.insert(name.into(), n);
+        }
     }
     pub fn reset(&mut self) {
         *self = Self::default();

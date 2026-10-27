@@ -51,6 +51,22 @@ pub fn sog_v2_sh_overrides() -> Overrides {
     const DIR: &str = "let dir = normalize(viewDir * modelView3x3);";
     assert!(VS.contains(DIR), "gsplat SH direction hook changed");
     let vs = VS.replace(DIR, "let dir = wheelShDirection(normalize(viewDir * modelView3x3));");
+    // Opacity alone can reject a depth splat before covariance projection. Keep the
+    // original post-AA/colour-hook rejection too. This specialization applies only
+    // when AA is disabled, so no opacity amplification or changed operation order
+    // can move a surviving splat across the cutoff.
+    const CENTER: &str = "var modelCenter: vec3f = getCenter();";
+    assert!(vs.contains(CENTER), "gsplat early opacity hook changed");
+    let vs = vs.replace(CENTER, r#"
+#if defined(PREPASS_PASS) && !GSPLAT_AA
+    let prepassOpacity = textureLoad(sh0, splat.uv, 0).w;
+    if (prepassOpacity * splatFade[splat.index] <= uniform.alphaClip) {
+        output.position = discardVec;
+        return output;
+    }
+#endif
+    var modelCenter: vec3f = getCenter();
+"#);
     const READ_COLOR: &str = "var clr: half4 = half4(getColor());";
     assert!(vs.contains(READ_COLOR), "gsplat color hook changed");
     o.insert("gsplatVS".into(), vs.replace(READ_COLOR, "#ifdef PREPASS_PASS\n var clr: half4 = half4(0.0, 0.0, 0.0, textureLoad(sh0, splat.uv, 0).w);\n#else\n var clr: half4 = half4(getColor());\n#endif"));

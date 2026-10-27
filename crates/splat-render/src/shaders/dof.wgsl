@@ -35,6 +35,26 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 
 const TAPS: i32 = 16;
 const GOLDEN_ANGLE: f32 = 2.39996323;
+// Fixed unit-disc taps: evaluate the uniform loop's sqrt/sin/cos once at
+// shader creation, rather than asking the fragment compiler to fold them.
+const DISC: array<vec2f, 16> = array<vec2f, 16>(
+    vec2f(cos(0.0 * GOLDEN_ANGLE), sin(0.0 * GOLDEN_ANGLE)) * sqrt((0.0 + 0.5) / 16.0),
+    vec2f(cos(1.0 * GOLDEN_ANGLE), sin(1.0 * GOLDEN_ANGLE)) * sqrt((1.0 + 0.5) / 16.0),
+    vec2f(cos(2.0 * GOLDEN_ANGLE), sin(2.0 * GOLDEN_ANGLE)) * sqrt((2.0 + 0.5) / 16.0),
+    vec2f(cos(3.0 * GOLDEN_ANGLE), sin(3.0 * GOLDEN_ANGLE)) * sqrt((3.0 + 0.5) / 16.0),
+    vec2f(cos(4.0 * GOLDEN_ANGLE), sin(4.0 * GOLDEN_ANGLE)) * sqrt((4.0 + 0.5) / 16.0),
+    vec2f(cos(5.0 * GOLDEN_ANGLE), sin(5.0 * GOLDEN_ANGLE)) * sqrt((5.0 + 0.5) / 16.0),
+    vec2f(cos(6.0 * GOLDEN_ANGLE), sin(6.0 * GOLDEN_ANGLE)) * sqrt((6.0 + 0.5) / 16.0),
+    vec2f(cos(7.0 * GOLDEN_ANGLE), sin(7.0 * GOLDEN_ANGLE)) * sqrt((7.0 + 0.5) / 16.0),
+    vec2f(cos(8.0 * GOLDEN_ANGLE), sin(8.0 * GOLDEN_ANGLE)) * sqrt((8.0 + 0.5) / 16.0),
+    vec2f(cos(9.0 * GOLDEN_ANGLE), sin(9.0 * GOLDEN_ANGLE)) * sqrt((9.0 + 0.5) / 16.0),
+    vec2f(cos(10.0 * GOLDEN_ANGLE), sin(10.0 * GOLDEN_ANGLE)) * sqrt((10.0 + 0.5) / 16.0),
+    vec2f(cos(11.0 * GOLDEN_ANGLE), sin(11.0 * GOLDEN_ANGLE)) * sqrt((11.0 + 0.5) / 16.0),
+    vec2f(cos(12.0 * GOLDEN_ANGLE), sin(12.0 * GOLDEN_ANGLE)) * sqrt((12.0 + 0.5) / 16.0),
+    vec2f(cos(13.0 * GOLDEN_ANGLE), sin(13.0 * GOLDEN_ANGLE)) * sqrt((13.0 + 0.5) / 16.0),
+    vec2f(cos(14.0 * GOLDEN_ANGLE), sin(14.0 * GOLDEN_ANGLE)) * sqrt((14.0 + 0.5) / 16.0),
+    vec2f(cos(15.0 * GOLDEN_ANGLE), sin(15.0 * GOLDEN_ANGLE)) * sqrt((15.0 + 0.5) / 16.0)
+);
 // Nothing written (the sky): treated as very far.
 const SKY_M: f32 = 1.0e5;
 
@@ -91,10 +111,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
     var sum = base;
     var total = 1.0;
     for (var i = 0; i < TAPS; i = i + 1) {
-        // Evenly spread over the disc: radius grows with the square root of the tap index.
-        let r = sqrt((f32(i) + 0.5) / f32(TAPS)) * radius;
-        let a = f32(i) * GOLDEN_ANGLE;
-        let offset = vec2f(cos(a), sin(a)) * r;
+        let offset = DISC[i] * radius;
         let there = distance_at(px + vec2i(round(offset)));
         // Only gather from what is at least about as far: the sharp foreground stays out of the blur.
         if (there >= here * 0.85) {
